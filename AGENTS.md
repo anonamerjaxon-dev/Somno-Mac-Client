@@ -26,10 +26,14 @@ independent SwiftPM package (except `black hole/` and `totem pop/` — see below
 
 - Full audit report (2026-10-02): see the session workspace file `somno-mac-client-audit.md`;
   raw per-finding file:line detail in `somno-audit-notes.md` (same folder).
-- A priority fix round addresses all P0–P2 findings across cursor trail, desktop-canvas,
-  ghost trail, totem pop, and cursor changer (in progress as of 2026-10-02; update this
-  line with final status when done). `black hole/` is deliberately excluded
-  (reference-only, see above).
+- The P0–P2 fix round across cursor trail, desktop-canvas, ghost trail, totem pop, and
+  cursor changer completed on 2026-10-02. Every module builds and runs a non-zero number
+  of tests; `black hole/` was deliberately excluded (reference-only, see above).
+  Commits, newest first: `f3b74f1` docs/spikes absolute paths, `06bbaed` desktop-canvas
+  (build + 112 tests), `37455f8` cursor changer (209 assertions), `4377b02` cursor trail
+  (46 tests), `d86ed75` cursor trail build.sh, `17b1afc` totem pop HID lifetime,
+  `73e1ceb` ghost trail (12 tests), `75c1fb8` the polymorph → cursor changer rename,
+  `a86f865` repo hygiene.
 
 ## Conventions
 

@@ -137,7 +137,7 @@ Linear interpolation: `threshold = 0.5 + (sensitivity * 9.5)`
 
 ## Assets
 
-- **Video:** `/Users/jackson/Desktop/     /claude/mac ui/totem pop/6月30日 (1).mp4` — 3840x2160, H.264, 60fps, 2.7s, with stereo AAC audio
+- **Video:** `totem pop/6月30日 (1).mp4` — 3840x2160, H.264, 60fps, 2.7s, with stereo AAC audio
 - The video file is copied into the SPM package as a resource
 - `AVPlayer` handles both video and audio playback natively
 
@@ -173,7 +173,7 @@ A minimal SwiftUI app bundled inside the SPM package that:
 ## Build & Run
 
 ```bash
-cd /Users/jackson/Desktop/     /claude/mac\ ui/totem\ pop/
+cd totem pop/
 # Build the SPM package
 swift build
 # Run the demo

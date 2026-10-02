@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-28
 **Status:** Approved
-**Location:** `/Users/jackson/Desktop/     /claude/mac ui/cursor trail/`
+**Location:** `cursor trail/`
 
 ---
 

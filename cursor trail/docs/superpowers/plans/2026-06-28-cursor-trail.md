@@ -113,13 +113,13 @@ final class CursorTrailTests: XCTestCase {
 
 - [ ] **Step 4: Verify package builds**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds with no errors
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "chore: scaffold Swift Package for CursorTrail"
 ```
@@ -180,7 +180,7 @@ final class RingBufferTests: XCTestCase {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift test --filter RingBufferTests`
+Run: `cd "cursor trail" && swift test --filter RingBufferTests`
 Expected: FAIL — "RingBuffer is not defined"
 
 - [ ] **Step 3: Create TrailPoint.swift**
@@ -263,13 +263,13 @@ struct RingBuffer<T> {
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift test --filter RingBufferTests`
+Run: `cd "cursor trail" && swift test --filter RingBufferTests`
 Expected: All 4 tests PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add TrailPoint and RingBuffer data structures"
 ```
@@ -329,7 +329,7 @@ final class TrailConfigurationTests: XCTestCase {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift test --filter TrailConfigurationTests`
+Run: `cd "cursor trail" && swift test --filter TrailConfigurationTests`
 Expected: FAIL — types not defined
 
 - [ ] **Step 3: Create TrailStyle.swift**
@@ -491,13 +491,13 @@ public struct TrailConfiguration: Sendable {
 
 - [ ] **Step 10: Run test to verify it passes**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift test --filter TrailConfigurationTests`
+Run: `cd "cursor trail" && swift test --filter TrailConfigurationTests`
 Expected: All tests PASS
 
 - [ ] **Step 11: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add configuration types (TrailColor, Style, Speed, Glow, Particles, Blur)"
 ```
@@ -548,13 +548,13 @@ public enum PermissionsManager {
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add PermissionsManager for accessibility and screen recording checks"
 ```
@@ -657,13 +657,13 @@ public final class CursorManager {
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add CursorManager for system cursor hide/show with reference counting"
 ```
@@ -750,13 +750,13 @@ struct TrailContentView: View {
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add TrailWindow transparent overlay with SwiftUI Canvas hosting"
 ```
@@ -988,13 +988,13 @@ public final class TrailRenderer {
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add TrailRenderer with line, ribbon, glow, and particle drawing"
 ```
@@ -1213,13 +1213,13 @@ public final class CursorTrail {
 
 - [ ] **Step 2: Build to verify**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds
 
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "feat: add CursorTrail main entry point with builder pattern and 60fps display link"
 ```
@@ -1425,7 +1425,7 @@ MIT
 - [ ] **Step 2: Commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "docs: add comprehensive README with architecture, cursor replacement explanation, and API reference"
 ```
@@ -1436,23 +1436,23 @@ git commit -m "docs: add comprehensive README with architecture, cursor replacem
 
 - [ ] **Step 1: Run full build**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift build`
+Run: `cd "cursor trail" && swift build`
 Expected: Build succeeds with no warnings
 
 - [ ] **Step 2: Run all tests**
 
-Run: `cd "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" && swift test`
+Run: `cd "cursor trail" && swift test`
 Expected: All tests PASS
 
 - [ ] **Step 3: Verify file structure**
 
-Run: `find "/Users/jackson/Desktop/     /claude/mac ui/cursor trail" -name "*.swift" | sort`
+Run: `find "cursor trail" -name "*.swift" | sort`
 Expected: All 14 source files + 2 test files listed
 
 - [ ] **Step 4: Final commit**
 
 ```bash
-cd "/Users/jackson/Desktop/     /claude/mac ui"
+cd "."
 git add cursor trail/
 git commit -m "chore: final build verification and test run"
 ```

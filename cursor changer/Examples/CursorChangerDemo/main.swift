@@ -1,4 +1,4 @@
-import Polymorph
+import CursorChanger
 import SwiftUI
 
 struct SkinRow: Identifiable {
@@ -16,7 +16,7 @@ struct ContentView: View {
     @State private var tickCount = 0
 
     private var enforcementStatus: String {
-        Polymorph.isEnforcing()
+        CursorChanger.isEnforcing()
             ? "enforcement ON — \(tickCount) refreshes"
             : "enforcement OFF"
     }
@@ -69,9 +69,9 @@ struct ContentView: View {
                 Spacer()
                 Text(enforcementStatus)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Polymorph.isEnforcing() ? .green : .secondary)
+                    .foregroundStyle(CursorChanger.isEnforcing() ? .green : .secondary)
                     .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
-                        tickCount = Polymorph.enforcementReapplies
+                        tickCount = CursorChanger.enforcementReapplies
                     }
             }
 
@@ -118,9 +118,9 @@ struct ContentView: View {
     private func apply() {
         guard let theme else { return }
         do {
-            let report = try Polymorph.apply(theme: theme)
+            let report = try CursorChanger.apply(theme: theme)
             if report.isSuccess {
-                Polymorph.startEnforcement(theme: theme)
+                CursorChanger.startEnforcement(theme: theme)
                 log = "[apply] \(report.summary)\n[apply] enforcement ON — keeps registrations alive\n" + log
             } else {
                 let failed = report.failures.map { "\($0.cgsName): CGError \($0.error!)" }.joined(separator: "\n  ")
@@ -133,8 +133,8 @@ struct ContentView: View {
 
     private func restore() {
         do {
-            Polymorph.stopEnforcement()
-            try Polymorph.restore()
+            CursorChanger.stopEnforcement()
+            try CursorChanger.restore()
             log = "[restore] system cursors restored\n" + log
         } catch {
             log = "[restore] ERROR: \(error.localizedDescription)\n" + log
@@ -158,7 +158,7 @@ struct ContentView: View {
         let m = DisplayChangeMonitor {
             guard let theme else { return }
             do {
-                _ = try Polymorph.apply(theme: theme)
+                _ = try CursorChanger.apply(theme: theme)
                 log = "[display] reapplied after display change\n" + log
             } catch {
                 log = "[display] reapply failed: \(error.localizedDescription)\n" + log
@@ -170,9 +170,9 @@ struct ContentView: View {
 }
 
 @main
-struct PolymorphDemoApp: App {
+struct CursorChangerDemoApp: App {
     var body: some Scene {
-        WindowGroup("Polymorph") {
+        WindowGroup("CursorChanger") {
             ContentView()
         }
     }

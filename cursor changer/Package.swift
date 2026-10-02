@@ -2,20 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "Polymorph",
+    name: "CursorChanger",
     platforms: [.macOS(.v13)],
     products: [
         .library(
-            name: "Polymorph",
-            targets: ["Polymorph"]
+            name: "CursorChanger",
+            targets: ["CursorChanger"]
         )
     ],
     dependencies: [],
     targets: [
         .target(
-            name: "Polymorph",
+            name: "CursorChanger",
             dependencies: [],
-            path: "Sources/Polymorph",
+            path: "Sources/CursorChanger",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("CoreGraphics")
@@ -23,23 +23,23 @@ let package = Package(
         ),
         .executableTarget(
             name: "TestRunner",
-            dependencies: ["Polymorph"],
+            dependencies: ["CursorChanger"],
             path: "Tests/TestRunner"
         ),
         .executableTarget(
-            name: "PolymorphDemo",
-            dependencies: ["Polymorph"],
-            path: "Examples/PolymorphDemo"
+            name: "CursorChangerDemo",
+            dependencies: ["CursorChanger"],
+            path: "Examples/CursorChangerDemo"
         ),
         .executableTarget(
-            name: "PolymorphCLI",
-            dependencies: ["Polymorph"],
-            path: "Sources/PolymorphCLI"
+            name: "CursorChangerCLI",
+            dependencies: ["CursorChanger"],
+            path: "Sources/CursorChangerCLI"
         ),
         .executableTarget(
-            name: "PolymorphAgent",
-            dependencies: ["Polymorph"],
-            path: "Examples/PolymorphAgent"
+            name: "CursorChangerAgent",
+            dependencies: ["CursorChanger"],
+            path: "Examples/CursorChangerAgent"
         )
     ]
 )

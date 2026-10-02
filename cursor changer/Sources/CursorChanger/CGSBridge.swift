@@ -1,7 +1,23 @@
+import CoreFoundation
 import CoreGraphics
 import Foundation
 
-enum CGSBridgeError: Error, CustomStringConvertible {
+/// Bridges the untyped `CGImageRef` entries that
+/// `CGSCopyRegisteredCursorImages` / `CoreCursorCopyImages` return inside an
+/// `Unmanaged<CFTypeRef>`-ish `UnsafeRawPointer` array.
+///
+/// The arrays come back with no element type information, so an unchecked
+/// `unsafeBitCast` to `CGImage` is a type-confusion trap waiting to happen.
+/// `CFGetTypeID` is the only safe way to confirm the element really is an
+/// image before reinterpreting it.
+func cgImageFromCFValue(_ value: UnsafeRawPointer?) -> CGImage? {
+    guard let value else { return nil }
+    let cfType = Unmanaged<CFTypeRef>.fromOpaque(value).takeUnretainedValue()
+    guard CFGetTypeID(cfType) == CGImage.typeID else { return nil }
+    return Unmanaged<CGImage>.fromOpaque(value).takeUnretainedValue()
+}
+
+enum CGSBridgeError: Error, CustomStringConvertible, LocalizedError {
     case libraryLoadFailed(String)
     case symbolUnavailable(String)
 
@@ -13,10 +29,41 @@ enum CGSBridgeError: Error, CustomStringConvertible {
             return "Private symbol \(name) is unavailable on this macOS version"
         }
     }
+
+    var errorDescription: String? { description }
 }
 
 final class CGSBridge {
-    static let shared = try! CGSBridge()
+    /// Lazily built, cached, and *failable*: nothing on a reachable path can
+    /// trap the way `try! CGSBridge()` did when the private symbols are gone.
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cached: CGSBridge?
+    nonisolated(unsafe) private static var cachedError: Error?
+
+    static var shared: CGSBridge {
+        get throws {
+            cacheLock.lock()
+            defer { cacheLock.unlock() }
+            if let cached { return cached }
+            do {
+                let bridge = try CGSBridge()
+                cached = bridge
+                cachedError = nil
+                return bridge
+            } catch {
+                cachedError = error
+                throw error
+            }
+        }
+    }
+
+    /// The reason the last `shared` access failed, if any — lets callers say
+    /// *why* the bridge is unavailable instead of just that it is.
+    static var lastLoadError: Error? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cachedError
+    }
 
     let mainConnectionID: () -> Int32
     let registerCursorWithImages: (
@@ -154,6 +201,6 @@ final class CGSBridge {
     }
 
     static func isAvailable() -> Bool {
-        (try? CGSBridge()) != nil
+        (try? CGSBridge.shared) != nil
     }
 }

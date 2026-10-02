@@ -1,5 +1,5 @@
 import AppKit
-import Polymorph
+import CursorChanger
 import ApplicationServices
 
 enum Coverage: Int {
@@ -30,7 +30,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
     private func log(_ line: String) {
         let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         let text = "[\(stamp)] \(line)\n"
-        let path = "/tmp/polymorph-agent.log"
+        let path = "/tmp/cursor-changer-agent.log"
         if let handle = FileHandle(forWritingAtPath: path) {
             try? handle.seekToEnd()
             if let data = text.data(using: .utf8) {
@@ -45,7 +45,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         log("agent launched (pid \(ProcessInfo.processInfo.processIdentifier))")
-        Polymorph.diagnosticLogger = { [weak self] line in
+        CursorChanger.diagnosticLogger = { [weak self] line in
             self?.log(line)
         }
         rebuildMenu()
@@ -56,7 +56,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             guard self?.currentTheme != nil else { return }
-            Polymorph.finalizeRefresh()
+            CursorChanger.finalizeRefresh()
             self?.log("activation -> finalizeRefresh")
         }
 
@@ -64,8 +64,8 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Polymorph.stopEnforcement()
-        try? Polymorph.restore()
+        CursorChanger.stopEnforcement()
+        try? CursorChanger.restore()
     }
 
     private func loadAndApplySkin() {
@@ -112,7 +112,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
 
     private func handleClickEvent() {
         guard currentTheme != nil, coverage.rawValue >= Coverage.standard.rawValue else { return }
-        Polymorph.reassert()
+        CursorChanger.reassert()
     }
 
     private func handleMoveEvent() {
@@ -120,7 +120,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
         let now = Date()
         guard now.timeIntervalSince(lastMoveAssert) >= 0.08 else { return }
         lastMoveAssert = now
-        Polymorph.reassert()
+        CursorChanger.reassert()
     }
 
     // MARK: - Menu
@@ -129,8 +129,8 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
 
         let title = NSMenuItem()
-        title.title = currentTheme.map { "Polymorph — \($0.name) active" }
-            ?? (skinURL != nil ? "Polymorph — skin failed to load" : "Polymorph — no skin found")
+        title.title = currentTheme.map { "CursorChanger — \($0.name) active" }
+            ?? (skinURL != nil ? "CursorChanger — skin failed to load" : "CursorChanger — no skin found")
         title.isEnabled = false
         menu.addItem(title)
         menu.addItem(.separator())
@@ -211,7 +211,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ theme: CursorTheme) {
         do {
-            let report = try Polymorph.apply(theme: theme)
+            let report = try CursorChanger.apply(theme: theme)
             log("apply '\(theme.name)': \(report.summary)")
             for failure in report.failures {
                 log("  FAIL \(failure.cgsName): \(failure.error!.localizedDescription)")
@@ -223,7 +223,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
             }
             currentTheme = theme
             UserDefaults.standard.set(theme.directory.path, forKey: Self.skinPathKey)
-            Polymorph.startEnforcement(theme: theme)
+            CursorChanger.startEnforcement(theme: theme)
             forceVisualRefresh()
         } catch {
             log("apply threw: \(error)")
@@ -248,7 +248,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak window] in
             window?.close()
         }
-        Polymorph.finalizeRefresh()
+        CursorChanger.finalizeRefresh()
     }
 
     @objc private func chooseSkin() {
@@ -274,15 +274,15 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func restoreStock() {
-        Polymorph.stopEnforcement()
-        try? Polymorph.restore()
-        Polymorph.finalizeRefresh()
+        CursorChanger.stopEnforcement()
+        try? CursorChanger.restore()
+        CursorChanger.finalizeRefresh()
         currentTheme = nil
         rebuildMenu()
     }
 
     @objc private func nudgeCursor() {
-        Polymorph.scaleProbe()
+        CursorChanger.scaleProbe()
         rebuildMenu()
     }
 
@@ -311,14 +311,14 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
             log("per-app: \(app.localizedName ?? "?") has no on-screen layer-0 window")
             return
         }
-        guard let cid = Polymorph.connectionID(forWindowNumber: windowNumber) else {
+        guard let cid = CursorChanger.connectionID(forWindowNumber: windowNumber) else {
             log("per-app: could not resolve connection for window \(windowNumber)")
             return
         }
 
         log("per-app: registering '\(theme.name)' on \(app.localizedName ?? "?") cid=\(cid)…")
         do {
-            let report = try Polymorph.apply(theme: theme, cid: cid, refresh: false)
+            let report = try CursorChanger.apply(theme: theme, cid: cid, refresh: false)
             log("per-app result: \(report.summary)")
             for failure in report.failures {
                 log("  FAIL \(failure.cgsName): \(failure.error!.localizedDescription)")
@@ -368,7 +368,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
 
     private var launchAgentURL: URL {
         FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("LaunchAgents/com.polymorph.agent.plist")
+            .appendingPathComponent("LaunchAgents/com.cursor-changer.agent.plist")
     }
 
     private var loginItemEnabled: Bool {
@@ -382,7 +382,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
         } else {
             guard let executable = Bundle.main.executableURL?.path else { return }
             let plist: [String: Any] = [
-                "Label": "com.polymorph.agent",
+                "Label": "com.cursor-changer.agent",
                 "ProgramArguments": [executable],
                 "RunAtLoad": true
             ]

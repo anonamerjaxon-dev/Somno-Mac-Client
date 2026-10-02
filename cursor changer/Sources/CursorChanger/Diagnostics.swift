@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-public extension Polymorph {
+public extension CursorChanger {
     struct RegistryEntryInfo {
         public let identifier: String
         public let registered: Bool
@@ -20,8 +20,10 @@ public extension Polymorph {
         private var fmtHotspot: String { String(format: "%.0f,%.0f", hotspot.x, hotspot.y) }
     }
 
-    static func registryEntries(theme: CursorTheme) -> [RegistryEntryInfo] {
-        let bridge = CGSBridge.shared
+    static func registryEntries(theme: CursorTheme) throws -> [RegistryEntryInfo] {
+        // No `try!` here: a missing private symbol must surface as a thrown
+        // error, not a trap, even though this path is reachable from `debug`.
+        let bridge = try CGSBridge.shared
         let cid = bridge.mainConnectionID()
         var result: [RegistryEntryInfo] = []
         for name in Set(theme.cursors.flatMap { $0.state.cgsNames }).sorted() {
@@ -41,7 +43,7 @@ public extension Polymorph {
                 representationCount: images.map { CFArrayGetCount($0) } ?? -1
             ))
         }
-        for slot in 0...24 {
+        for slot in 0...maxCoreCursorSlot {
             var images: CFArray?
             var size = CGSize.zero
             var hotspot = CGPoint.zero
@@ -65,16 +67,20 @@ public extension Polymorph {
     }
 
     static func currentSeed() -> Int32 {
-        guard CGSBridge.isAvailable() else { return -1 }
-        return CGSBridge.shared.currentCursorSeed()
+        guard let bridge = try? CGSBridge.shared else { return -1 }
+        return bridge.currentCursorSeed()
     }
 
-    static func runDiagnostics(theme: CursorTheme) throws -> [String] {
+    /// Seconds spent watching the cursor seed after apply. Short enough to keep
+    /// `debug` usable, long enough for a couple of hover transitions.
+    static let monitorSeconds = 4
+
+    static func runDiagnostics(theme: CursorTheme, settleDelay: TimeInterval = 0.35) throws -> [String] {
         var out: [String] = []
         func say(_ line: String) { out.append(line) }
 
         say("=== PRE-APPLY REGISTRY ===")
-        registryEntries(theme: theme).forEach { say($0.line) }
+        try registryEntries(theme: theme).forEach { say($0.line) }
         var baselineSeed = currentSeed()
         say("seed before apply: \(baselineSeed)")
 
@@ -85,15 +91,15 @@ public extension Polymorph {
 
         say("")
         say("=== POST-APPLY REGISTRY ===")
-        registryEntries(theme: theme).forEach { say($0.line) }
+        try registryEntries(theme: theme).forEach { say($0.line) }
         let afterSeed = currentSeed()
         say("seed after apply: \(afterSeed) changed=\(afterSeed != baselineSeed)")
         baselineSeed = afterSeed
 
         say("")
-        say("=== LIVE MONITOR (15s) — hover this terminal, Safari, TextEdit, Desktop ===")
+        say("=== LIVE MONITOR (\(monitorSeconds)s) — hover a text field, a link, the Desktop ===")
         var lastLocation = CGEvent(source: nil)?.location ?? .zero
-        for tick in 1...15 {
+        for tick in 1...monitorSeconds {
             Thread.sleep(forTimeInterval: 1.0)
             let seed = currentSeed()
             let location = CGEvent(source: nil)?.location ?? .zero
@@ -109,16 +115,20 @@ public extension Polymorph {
 
         say("")
         say("=== FINAL REGISTRY ===")
-        registryEntries(theme: theme).forEach { say($0.line) }
+        try registryEntries(theme: theme).forEach { say($0.line) }
 
-        try restore()
         say("")
+        say("restoring stock cursors (debug always restores on exit)…")
+        try restore()
         say("restored stock cursors")
+        // Brief settle so the restored cursor is actually drawn before the
+        // process exits; this is a delay, not a monitor.
+        Thread.sleep(forTimeInterval: settleDelay)
         return out
     }
 }
 
-public extension Polymorph {
+public extension CursorChanger {
     struct OverlayAssets {
         public let cgImages: [CGImage]
         public let pointSize: CGSize
@@ -133,5 +143,34 @@ public extension Polymorph {
             pointSize: cursor.pointSize
         ) else { return nil }
         return OverlayAssets(cgImages: images, pointSize: cursor.pointSize, hotspot: cursor.hotspot)
+    }
+}
+
+/// AppKit's drawing context is process-global state (`NSGraphicsContext.current`)
+/// and is only safe to mutate on the main thread. Everything that rasterizes
+/// cursors funnels through here, on every thread.
+public enum CursorChangerRendering {
+    /// The thread that first asked for AppKit; treated as the main thread for
+    /// the purposes of the precondition below.
+    static let renderingThread: Thread = Thread.current
+
+    /// Runs `work` on the main thread and waits, preserving the caller's
+    /// synchronous contract. Re-entrant calls run inline to avoid deadlock.
+    public static func onMainThread<T>(_ work: () throws -> T) throws -> T {
+        if Thread.isMainThread {
+            return try work()
+        }
+        var result: Result<T, Error>!
+        DispatchQueue.main.sync {
+            result = Result { try work() }
+        }
+        return try result.get()
+    }
+
+    public static func assertMainThread(_ function: StaticString = #function) {
+        precondition(
+            Thread.isMainThread,
+            "AppKit cursor rasterization (\(function)) must run on the main thread; use CursorChangerRendering.onMainThread"
+        )
     }
 }

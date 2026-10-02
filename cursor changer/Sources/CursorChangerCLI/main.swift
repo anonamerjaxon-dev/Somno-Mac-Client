@@ -1,13 +1,13 @@
 import AppKit
 import Foundation
-import Polymorph
+import CursorChanger
 
 let args = CommandLine.arguments
 
 func runDebug(skinPath: String) throws {
     let url = URL(fileURLWithPath: NSString(string: skinPath).expandingTildeInPath)
     let theme = try CursorTheme.load(directory: url)
-    for line in try Polymorph.runDiagnostics(theme: theme) {
+    for line in try CursorChanger.runDiagnostics(theme: theme) {
         print(line)
         FileHandle.standardOutput.synchronizeFile()
     }
@@ -15,10 +15,10 @@ func runDebug(skinPath: String) throws {
 
 guard args.count >= 2 else {
     print("Usage:")
-    print("  PolymorphCLI apply <skin-folder>    replace cursors with skin")
-    print("  PolymorphCLI restore                back to system cursors")
-    print("  PolymorphCLI capture                save current cursors as the stock set")
-    print("  PolymorphCLI debug <skin-folder>    apply + registry dump + live seed monitor")
+    print("  CursorChangerCLI apply <skin-folder>    replace cursors with skin")
+    print("  CursorChangerCLI restore                back to system cursors")
+    print("  CursorChangerCLI capture                save current cursors as the stock set")
+    print("  CursorChangerCLI debug <skin-folder>    apply + registry dump + live seed monitor")
     exit(2)
 }
 
@@ -31,7 +31,7 @@ case "apply":
     let url = URL(fileURLWithPath: NSString(string: args[2]).expandingTildeInPath)
     do {
         let theme = try CursorTheme.load(directory: url)
-        let report = try Polymorph.apply(theme: theme)
+        let report = try CursorChanger.apply(theme: theme)
         print(report.summary)
         for failure in report.failures {
             print("  failed \(failure.cgsName): \(failure.error!)")
@@ -42,19 +42,19 @@ case "apply":
     }
 case "capture":
     do {
-        let count = try Polymorph.captureStockCursors()
-        print("Captured \(count) stock cursor(s) to \(Polymorph.stockCaptureDirectory.path)")
+        let count = try CursorChanger.captureStockCursors()
+        print("Captured \(count) stock cursor(s) to \(CursorChanger.stockCaptureDirectory.path)")
     } catch {
         print("ERROR: \(error)")
         exit(1)
     }
 case "restore":
     do {
-        if Polymorph.hasStockCapture() {
-            let count = try Polymorph.restoreFromStockCapture()
+        if CursorChanger.hasStockCapture() {
+            let count = try CursorChanger.restoreFromStockCapture()
             print("Re-registered \(count) stock cursor(s) from capture")
         } else {
-            try Polymorph.restore()
+            try CursorChanger.restore()
             print("System cursors restored (unregister-only; no capture existed)")
         }
     } catch {

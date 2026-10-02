@@ -1,9 +1,10 @@
 import AppKit
 import CoreGraphics
 
-enum ThemeImageError: Error, CustomStringConvertible {
+enum ThemeImageError: Error, CustomStringConvertible, LocalizedError {
     case unreadable(String)
     case renderFailed(String)
+    case sizeOutOfRange(path: String, pixels: Int, maximum: Int)
 
     var description: String {
         switch self {
@@ -11,12 +12,31 @@ enum ThemeImageError: Error, CustomStringConvertible {
             return "Could not decode image: \(path) (supported: png, svg, jpg, tiff)"
         case .renderFailed(let path):
             return "Could not rasterize: \(path)"
+        case .sizeOutOfRange(let path, let pixels, let maximum):
+            return "Refusing to rasterize \(path) at \(pixels)x\(pixels)px — the limit is \(maximum)x\(maximum)px per side"
         }
     }
+
+    var errorDescription: String? { description }
 }
 
 enum ThemeImageLoader {
+    /// Hard cap on a rasterized cursor edge, in pixels. `pointSize × 2` is
+    /// unclamped input — a `{"arrow": 100000}` size entry would otherwise ask
+    /// for a ~200000² bitmap (~160 GB at 4 bytes/pixel).
+    static let maximumPixelsPerSide = 2048
+
     static func cgImages(oneXURL: URL, retinaURL: URL?, pointSize: CGSize, scales: [CGFloat] = [1.0, 2.0]) throws -> [CGImage] {
+        // NSImage decoding and NSGraphicsContext.current mutation are AppKit
+        // main-thread work; hop there from any thread.
+        try CursorChangerRendering.onMainThread {
+            try cgImagesOnMainThread(oneXURL: oneXURL, retinaURL: retinaURL, pointSize: pointSize, scales: scales)
+        }
+    }
+
+    private static func cgImagesOnMainThread(oneXURL: URL, retinaURL: URL?, pointSize: CGSize, scales: [CGFloat]) throws -> [CGImage] {
+        CursorChangerRendering.assertMainThread("ThemeImageLoader.cgImages")
+
         let source = NSImage(contentsOf: oneXURL)
         let retinaSource = retinaURL.flatMap { NSImage(contentsOf: $0) }
         guard source != nil || retinaSource != nil else {
@@ -38,6 +58,7 @@ enum ThemeImageLoader {
                 width: max(1, round(pointSize.width * scale)),
                 height: max(1, round(pointSize.height * scale))
             )
+            try Self.validatePixelSize(pixelSize, path: oneXURL.path)
             guard let cg = rasterize(image: image, pixelSize: pixelSize) else {
                 throw ThemeImageError.renderFailed(oneXURL.path)
             }
@@ -46,7 +67,24 @@ enum ThemeImageLoader {
         return result
     }
 
+    /// Refuses absurd bitmaps with a clear error instead of attempting the
+    /// allocation. Also guards against non-finite sizes (NaN → Int() traps).
+    static func validatePixelSize(_ pixelSize: CGSize, path: String) throws {
+        let width = pixelSize.width
+        let height = pixelSize.height
+        guard width.isFinite, height.isFinite else {
+            throw ThemeImageError.renderFailed("\(path) (non-finite size \(width)x\(height))")
+        }
+        let pixels = max(Int(width.rounded(.down)), Int(height.rounded(.down)))
+        guard pixels <= maximumPixelsPerSide else {
+            throw ThemeImageError.sizeOutOfRange(path: path, pixels: pixels, maximum: maximumPixelsPerSide)
+        }
+    }
+
+    /// Main-thread only: mutates `NSGraphicsContext.current`, which is
+    /// process-global AppKit state.
     private static func rasterize(image: NSImage, pixelSize: CGSize) -> CGImage? {
+        CursorChangerRendering.assertMainThread("ThemeImageLoader.rasterize")
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: Int(pixelSize.width),

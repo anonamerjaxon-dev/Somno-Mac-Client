@@ -98,6 +98,28 @@ struct Pattern: Identifiable {
     ]
 }
 
+extension Pattern: Equatable {
+    /// Identity by content: `id` is a fresh UUID per instance, so two views
+    /// holding the same pattern would otherwise always compare unequal.
+    static func == (lhs: Pattern, rhs: Pattern) -> Bool {
+        lhs.name == rhs.name
+            && lhs.cells.count == rhs.cells.count
+            && zip(lhs.cells, rhs.cells).allSatisfy { $0.row == $1.row && $0.col == $1.col }
+    }
+
+    /// True when two optionals hold the same pattern; `nil` matches only `nil`.
+    static func equivalent(_ lhs: Pattern?, _ rhs: Pattern?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case let (lhs?, rhs?):
+            return lhs == rhs
+        default:
+            return false
+        }
+    }
+}
+
 extension Pattern {
     func rotated(by turns: Int) -> [(row: Int, col: Int)] {
         let r = ((turns % 4) + 4) % 4
@@ -153,6 +175,10 @@ struct GridEditorView: View {
         .onAppear {
             loadGridState()
             keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Typing in a text field must never be reinterpreted as a tool
+                // shortcut, so the editor yields while one has focus.
+                guard !isTextInputFocused else { return event }
+
                 switch event.keyCode {
                 case 49:
                     DispatchQueue.main.async {
@@ -340,8 +366,12 @@ struct GridEditorView: View {
                 grid = newGrid
                 flushToProvider()
             },
-            onShapeComplete: { r0, c0, r1, c1, tool in
-                handleShapeComplete(fromRow: r0, fromCol: c0, toRow: r1, toCol: c1, tool: tool)
+            onShapeComplete: { _, _, _, _, _ in
+                // The shape has already been drawn into the local grid by the
+                // NSView. Pushing it to the live provider is just a flush, so
+                // there is one code path for every tool rather than a second,
+                // duplicated copy of the line/rectangle geometry.
+                flushToProvider()
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -370,6 +400,14 @@ struct GridEditorView: View {
     }
 
     private func loadGridState() {
+        isPlaying = !(canvas?.gameOfLifeConfig?.paused ?? false)
+
+        if let config = canvas?.gameOfLifeConfig {
+            cellSize = config.cellSize
+            aliveColor = config.aliveColor.nsColor
+            deadColor = config.deadColor.nsColor
+        }
+
         DesktopCanvas.shared.withGoLProvider(for: canvasID) { provider in
             provider.pause()
 
@@ -387,27 +425,10 @@ struct GridEditorView: View {
         }
 
         if gridW == 0 || gridH == 0, let canvas = canvas {
-            let w = max(1, Int(floor(canvas.frame.width / CGFloat(cellSize))))
-            let h = max(1, Int(floor(canvas.frame.height / CGFloat(cellSize))))
-            gridW = w
-            gridH = h
-            grid = Array(repeating: 0, count: w * h)
-
-            if let config = canvas.gameOfLifeConfig {
-                cellSize = config.cellSize
-                aliveColor = NSColor(
-                    red: config.aliveColor.red,
-                    green: config.aliveColor.green,
-                    blue: config.aliveColor.blue,
-                    alpha: config.aliveColor.alpha
-                )
-                deadColor = NSColor(
-                    red: config.deadColor.red,
-                    green: config.deadColor.green,
-                    blue: config.deadColor.blue,
-                    alpha: config.deadColor.alpha
-                )
-            }
+            let dims = GameOfLifeConfig.gridDimensions(for: canvas.frame, cellSize: cellSize)
+            gridW = dims.cols
+            gridH = dims.rows
+            grid = Array(repeating: 0, count: gridW * gridH)
         }
     }
 
@@ -426,6 +447,19 @@ struct GridEditorView: View {
         }
     }
 
+    /// True while an editable text control owns first responder in the key window,
+    /// which is where typing has to go verbatim.
+    ///
+    /// Checked at key-down time rather than stored, because focus moves inside
+    /// SwiftUI without the grid editor being told about it.
+    private var isTextInputFocused: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        if let textView = responder as? NSTextView {
+            return textView.isEditable
+        }
+        return responder is NSTextField
+    }
+
     private func flushToProvider() {
         DesktopCanvas.shared.withGoLProvider(for: canvasID) { provider in
             provider.writeFullGrid(grid)
@@ -437,11 +471,14 @@ struct GridEditorView: View {
         let w = gridW
         let h = gridH
         let cID = canvasID
+        // The editor pauses the simulation on open, so it owns restoring the run
+        // state when it closes. It must restore exactly what it found: a canvas
+        // the user had paused must stay paused on the desktop.
         let wasPlaying = isPlaying
 
         DesktopCanvas.shared.withGoLProvider(for: cID) { provider in
             provider.writeFullGrid(gridCopy)
-            if !wasPlaying {
+            if wasPlaying {
                 provider.resume()
             }
         }
@@ -456,58 +493,6 @@ struct GridEditorView: View {
             }
             DispatchQueue.main.async {
                 self.state.persistGridState(gridState, canvasID: cID)
-            }
-        }
-    }
-
-    private func handleCellAction(row: Int, col: Int, tool: DrawTool) {
-        guard row >= 0, row < gridH, col >= 0, col < gridW else { return }
-
-        if let pattern = selectedPattern {
-            placePattern(pattern, atRow: row, atCol: col)
-        }
-    }
-
-    private func handleShapeComplete(fromRow: Int, fromCol: Int, toRow: Int, toCol: Int, tool: DrawTool) {
-        let alive = tool != .eraser
-
-        switch tool {
-        case .line:
-            DesktopCanvas.shared.withGoLProvider(for: canvasID) { provider in
-                provider.drawLine(fromRow: fromRow, fromCol: fromCol, toRow: toRow, toCol: toCol, alive: alive)
-            }
-        case .rectangle:
-            let minR = min(fromRow, toRow)
-            let maxR = max(fromRow, toRow)
-            let minC = min(fromCol, toCol)
-            let maxC = max(fromCol, toCol)
-            DesktopCanvas.shared.withGoLProvider(for: canvasID) { provider in
-                provider.fillRect(minRow: minR, minCol: minC, maxRow: maxR, maxCol: maxC, alive: alive)
-            }
-        case .pencil, .eraser:
-            break
-        }
-
-        refreshGridFromProvider()
-    }
-
-    private func placePattern(_ pattern: Pattern, atRow row: Int, atCol col: Int) {
-        let cells = pattern.rotated(by: patternRotation)
-        for (dr, dc) in cells {
-            let r = row + dr
-            let c = col + dc
-            if r >= 0, r < gridH, c >= 0, c < gridW {
-                let idx = r * gridW + c
-                grid[idx] = 1
-            }
-        }
-        DesktopCanvas.shared.withGoLProvider(for: canvasID) { provider in
-            for (dr, dc) in cells {
-                let r = row + dr
-                let c = col + dc
-                if r >= 0, r < gridH, c >= 0, c < gridW {
-                    provider.setCell(row: r, col: c, alive: true)
-                }
             }
         }
     }
@@ -579,32 +564,34 @@ struct GridCanvasView: NSViewRepresentable {
         nsView.coordinator?.onShapeComplete = onShapeComplete
         nsView.coordinator?.onGridChanged = onGridChanged
         nsView.onZoomChange = onZoomChange
-        nsView.grid = grid
-        nsView.gridW = gridW
-        nsView.gridH = gridH
-        nsView.cellSize = cellSize
-        nsView.showGridLines = showGridLines
-        nsView.aliveColor = aliveColor
-        nsView.deadColor = deadColor
-        nsView.selectedTool = selectedTool
-        nsView.selectedPattern = selectedPattern
-        nsView.patternRotation = patternRotation
         nsView.onHoverChange = { hoveredCell = $0 }
         nsView.onShapePreviewChange = { shapePreview = $0 }
-        nsView.needsDisplay = true
+        // Assigning the grid bumps `gridGeneration`, which invalidates the cached
+        // bitmap. Everything else is compared first so that an unrelated SwiftUI
+        // update — a hover, a tool switch, a status-bar string — does not throw
+        // away a bitmap that is still correct.
+        nsView.apply(
+            grid: grid,
+            gridW: gridW,
+            gridH: gridH,
+            cellSize: cellSize,
+            showGridLines: showGridLines,
+            aliveColor: aliveColor,
+            deadColor: deadColor,
+            selectedTool: selectedTool,
+            selectedPattern: selectedPattern,
+            patternRotation: patternRotation
+        )
     }
 
     final class Coordinator {
-        var onCellAction: ((Int, Int, DrawTool) -> Void)?
         var onShapeComplete: (Int, Int, Int, Int, DrawTool) -> Void
         var onGridChanged: ([UInt8]) -> Void
 
         init(
-            onCellAction: ((Int, Int, DrawTool) -> Void)? = nil,
             onShapeComplete: @escaping (Int, Int, Int, Int, DrawTool) -> Void,
             onGridChanged: @escaping ([UInt8]) -> Void
         ) {
-            self.onCellAction = onCellAction
             self.onShapeComplete = onShapeComplete
             self.onGridChanged = onGridChanged
         }
@@ -631,6 +618,55 @@ final class GridCanvasNSView: NSView {
     var onShapePreviewChange: (((r0: Int, c0: Int, r1: Int, c1: Int)?) -> Void)?
     var onZoomChange: ((CGFloat) -> Void)?
     var initialZoom: CGFloat = 8
+
+    /// Applies the representable's state, touching only what actually changed.
+    ///
+    /// `grid` bumps `gridGeneration`, and a generation change invalidates the
+    /// cached bitmap. Assigning the grid on every SwiftUI update — while hovering,
+    /// while a status-bar string redraws — rebuilt that bitmap for nothing.
+    func apply(
+        grid: [UInt8],
+        gridW: Int,
+        gridH: Int,
+        cellSize: Int,
+        showGridLines: Bool,
+        aliveColor: NSColor,
+        deadColor: NSColor,
+        selectedTool: DrawTool,
+        selectedPattern: Pattern?,
+        patternRotation: Int
+    ) {
+        let appearanceChanged = self.aliveColor != aliveColor
+            || self.deadColor != deadColor
+            || self.gridW != gridW
+            || self.gridH != gridH
+            || self.cellSize != cellSize
+            || !Pattern.equivalent(self.selectedPattern, selectedPattern)
+            || self.patternRotation != patternRotation
+        let displayChanged = self.showGridLines != showGridLines
+            || self.selectedTool != selectedTool
+
+        if self.grid != grid {
+            self.grid = grid
+            if appearanceChanged {
+                cachedGridImage = nil
+            }
+        }
+        self.gridW = gridW
+        self.gridH = gridH
+        self.cellSize = cellSize
+        self.aliveColor = aliveColor
+        self.deadColor = deadColor
+        self.selectedPattern = selectedPattern
+        self.patternRotation = patternRotation
+
+        if appearanceChanged || displayChanged {
+            self.showGridLines = showGridLines
+            self.selectedTool = selectedTool
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
+        }
+    }
 
     private var zoomLevel: CGFloat = 8
     private var panOffset: CGPoint = .zero

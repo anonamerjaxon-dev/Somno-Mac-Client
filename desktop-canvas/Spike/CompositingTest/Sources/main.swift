@@ -5,7 +5,12 @@ import QuartzCore
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
-let videoPath = "/Users/jackson/Desktop/【动态设计】About MC....mp4"
+// Pass the video to play: `swift run CompositingTest /path/to/video.mp4`
+let videoPath = CommandLine.arguments.dropFirst().first ?? ""
+guard !videoPath.isEmpty else {
+    print("usage: swift run CompositingTest /path/to/video.mp4")
+    exit(2)
+}
 
 print("=== Desktop Video Background Test ===\n")
 print("Level: kCGDesktopIconWindowLevel = \(CGWindowLevelForKey(.desktopIconWindow))")

@@ -13,6 +13,7 @@ final class VideoProvider: CanvasProvider {
     private var statusObserver: NSKeyValueObservation?
     private var ownerView: NSView?
     private var playbackDeferred = true
+    private var occlusionObserverInstalledFor: NSWindow?
 
     init(canvas: CanvasModel) {
         self.canvas = canvas
@@ -49,13 +50,11 @@ final class VideoProvider: CanvasProvider {
         superview.layer?.addSublayer(layer)
         self.playerLayer = layer
 
-        statusObserver = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
-            guard let self else { return }
-            if item.status == .failed {
-                DispatchQueue.main.async {
-                    self.showPlaceholder(in: superview, size: contentSize,
-                                         message: "Playback failed: \(item.error?.localizedDescription ?? "unknown")")
-                }
+        statusObserver = playerItem.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard let self, item.status == .failed else { return }
+            DispatchQueue.main.async {
+                self.showPlaceholder(in: superview, size: contentSize,
+                                     message: "Playback failed: \(item.error?.localizedDescription ?? "unknown")")
             }
         }
 
@@ -70,25 +69,40 @@ final class VideoProvider: CanvasProvider {
             }
         }
 
-        observeWindowOcclusion(superview)
+        // `attach` runs before the renderer is added to the window's content view, so
+        // there is no window to observe yet. `update()` re-checks until one exists.
+        installOcclusionObserverIfPossible()
 
         playbackDeferred = true
     }
 
-    private func observeWindowOcclusion(_ superview: NSView) {
-        guard let window = superview.window else { return }
+    /// Installs the occlusion observer once the provider's view is in a window.
+    ///
+    /// Called from `update()` as well as `attach`, because at `attach` time the
+    /// renderer has not been added to a window yet and `superview.window` is nil.
+    /// Idempotent: it does nothing once installed for the current window.
+    func installOcclusionObserverIfPossible() {
+        guard occlusionObserver == nil, let window = ownerView?.window else { return }
 
+        occlusionObserverInstalledFor = window
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let window = self.ownerView?.window else { return }
-            if window.occlusionState.contains(.visible) {
-                self.player?.play()
-            } else {
-                self.player?.pause()
-            }
+            self?.applyOcclusionState()
+        }
+
+        // The observer only fires on a *change*, so honour the state we start in.
+        applyOcclusionState()
+    }
+
+    private func applyOcclusionState() {
+        guard let window = ownerView?.window, occlusionObserver != nil else { return }
+        if window.occlusionState.contains(.visible) {
+            player?.play()
+        } else {
+            player?.pause()
         }
     }
 
@@ -128,6 +142,7 @@ final class VideoProvider: CanvasProvider {
             NotificationCenter.default.removeObserver(observer)
             occlusionObserver = nil
         }
+        occlusionObserverInstalledFor = nil
         statusObserver?.invalidate()
         statusObserver = nil
         ownerView = nil
@@ -148,6 +163,7 @@ final class VideoProvider: CanvasProvider {
            player?.volume != Float(newVolume) {
             player?.volume = Float(newVolume)
         }
+        installOcclusionObserverIfPossible()
         if playbackDeferred, canvas.frame.size.width > 0, canvas.frame.size.height > 0 {
             playbackDeferred = false
             player?.play()

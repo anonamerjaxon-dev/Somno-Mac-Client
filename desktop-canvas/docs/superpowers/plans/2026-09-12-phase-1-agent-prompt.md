@@ -13,7 +13,7 @@ After you're done, verify with `swift build`. The package must compile with zero
 You're working on the **Somno Mac Client** monorepo at:
 
 ```
-/Users/jackson/Desktop/work related/claude/something client mac/
+./
 ```
 
 This repo contains multiple macOS modules. The one we care about is `desktop-canvas/`.
@@ -413,7 +413,7 @@ struct RuleSet: Codable, Equatable {
 After creating all files, run:
 
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift build
 ```
 

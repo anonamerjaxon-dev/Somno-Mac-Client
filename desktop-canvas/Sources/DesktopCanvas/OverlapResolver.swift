@@ -20,8 +20,22 @@ public enum OverlapResolver {
         against others: [CanvasModel],
         preferredDirection: CGVector = .zero
     ) -> CGRect {
-        var resolved = moving.frame
-        let others = others.filter { $0.id != moving.id }
+        resolve(moving: moving.frame, excluding: moving.id, against: others, preferredDirection: preferredDirection)
+    }
+
+    /// Resolves a candidate frame that is not (yet) part of `against`.
+    ///
+    /// The editor calls this on every mouse-moved while dragging, with a frame
+    /// built from the drag so far, so the moving canvas does not have to be
+    /// written back into the model first.
+    public static func resolve(
+        moving frame: CGRect,
+        excluding movingID: UUID,
+        against others: [CanvasModel],
+        preferredDirection: CGVector = .zero
+    ) -> CGRect {
+        var resolved = frame
+        let others = others.filter { $0.id != movingID }
 
         for other in others {
             guard resolved.intersects(other.frame) else { continue }
@@ -58,7 +72,10 @@ public enum OverlapResolver {
         public var errorDescription: String? {
             switch self {
             case .overlappingCanvases(let pairs):
-                return "Layout contains \(pairs.count) overlapping canvas pair(s)"
+                let listed = pairs
+                    .map { "\($0.0.uuidString) \($0.1.uuidString)" }
+                    .joined(separator: ", ")
+                return "Layout contains \(pairs.count) overlapping canvas pair(s): \(listed)"
             }
         }
     }

@@ -11,27 +11,43 @@ public struct RuleSet: Codable, Equatable, Hashable {
         self.survival = survival
     }
 
+    /// Parses `B<counts>/S<counts>` notation, e.g. `B3/S23`.
+    ///
+    /// Whitespace is ignored and the letters are case-insensitive. Duplicate
+    /// counts are collapsed (`B33/S23` is `B3/S23`). A count outside 0…8, any
+    /// other junk, and a rule that can neither birth nor keep a cell alive
+    /// (`B/S`) are rejected.
     public init?(bSNotation: String) {
         let parts = bSNotation.split(separator: "/")
         guard parts.count == 2 else { return nil }
 
-        let birthPart = parts[0]
-        let survivalPart = parts[1]
+        let birthPart = parts[0].trimmingWhitespace()
+        let survivalPart = parts[1].trimmingWhitespace()
 
-        guard birthPart.hasPrefix("B"), survivalPart.hasPrefix("S") else { return nil }
+        guard let birthLetter = birthPart.first,
+              birthLetter.uppercased() == "B",
+              let survivalLetter = survivalPart.first,
+              survivalLetter.uppercased() == "S" else { return nil }
 
-        let birthDigits = birthPart.dropFirst()
-        let survivalDigits = survivalPart.dropFirst()
-
-        let birthSet = Set(birthDigits.compactMap { Int(String($0)) })
-        let survivalSet = Set(survivalDigits.compactMap { Int(String($0)) })
-
-        guard birthSet.count == birthDigits.count,
-              survivalSet.count == survivalDigits.count else { return nil }
+        guard let birthSet = Self.counts(birthPart.dropFirst()),
+              let survivalSet = Self.counts(survivalPart.dropFirst()),
+              !birthSet.isEmpty || !survivalSet.isEmpty else { return nil }
 
         self.name = "Custom"
         self.birth = birthSet
         self.survival = survivalSet
+    }
+
+    /// Every character must be an ASCII digit; a cell has 8 neighbours, so
+    /// anything outside 0…8 cannot be honoured by the compute kernel.
+    private static func counts(_ digits: Substring) -> Set<Int>? {
+        var result: Set<Int> = []
+        for character in digits {
+            guard let digit = character.wholeNumberValue, character.isASCII, character.isNumber,
+                  (0...8).contains(digit) else { return nil }
+            result.insert(digit)
+        }
+        return result
     }
 
     public var bSNotation: String {
@@ -54,4 +70,18 @@ public struct RuleSet: Codable, Equatable, Hashable {
         .conway, .highLife, .dayNight, .seeds, .maze,
         .anneal, .twoByTwo, .morley, .diamoeba
     ]
+}
+
+private extension Substring {
+    /// Drops surrounding whitespace without losing interior characters.
+    func trimmingWhitespace() -> Substring {
+        var slice = self[...]
+        while let first = slice.first, first == " " || first == "\t" || first == "\n" {
+            slice = slice.dropFirst()
+        }
+        while let last = slice.last, last == " " || last == "\t" || last == "\n" {
+            slice = slice.dropLast()
+        }
+        return slice
+    }
 }

@@ -10,8 +10,6 @@ final class ScreenManager {
     func applyEmbedded(layout: CanvasLayout) {
         self.layout = layout
 
-        NSApplication.shared.setActivationPolicy(.accessory)
-
         for screen in NSScreen.screens {
             createWindow(for: screen)
         }
@@ -81,7 +79,9 @@ final class ScreenManager {
     func refresh(with layout: CanvasLayout? = nil) {
         if let layout { self.layout = layout }
         guard let layout = self.layout else { return }
+        let background = layout.backgroundColor?.nsColor
         for (_, window) in windows {
+            window.setBackgroundColor(background)
             window.layoutCanvases(layout.canvases)
         }
     }
@@ -90,24 +90,29 @@ final class ScreenManager {
         guard let layout = layout else { return }
         let window = CanvasWindow(screen: screen)
         window.setBackgroundColor(layout.backgroundColor?.nsColor)
-        window.layoutCanvases(layout.canvases)
+        window.layoutCanvases(ScreenGeometry.canvasesVisible(on: screen.frame, in: layout.canvases))
         windows[screen] = window
     }
 
     private func handleScreenChange() {
-        let currentScreens = Set(NSScreen.screens)
+        let currentScreens = NSScreen.screens
 
+        // A screen can be re-configured (resolution, scale, arrangement) without
+        // being removed, so surviving windows are re-framed against their new
+        // frame and re-laid-out instead of keeping stale geometry.
         for (screen, window) in windows {
-            if !currentScreens.contains(screen) {
+            if currentScreens.contains(screen) {
+                window.reframe(to: screen.frame)
+            } else {
                 window.orderOut(nil)
                 windows[screen] = nil
             }
         }
 
-        for screen in currentScreens {
-            if windows[screen] == nil {
-                createWindow(for: screen)
-            }
+        for screen in currentScreens where windows[screen] == nil {
+            createWindow(for: screen)
         }
+
+        refresh()
     }
 }

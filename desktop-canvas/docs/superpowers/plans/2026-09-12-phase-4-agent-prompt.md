@@ -16,7 +16,7 @@ After done: `swift build` must pass with zero errors, zero warnings.
 
 ## Project context
 
-**Repo root:** `/Users/jackson/Desktop/work related/claude/something client mac/`
+**Repo root:** `./`
 **Module:** `desktop-canvas/`
 **What:** DesktopCanvas renders dynamic content behind macOS desktop icons. MP4 videos + Game of Life.
 
@@ -88,7 +88,7 @@ perfectly — icons clickable, Mission Control and Spaces survive, no visual art
 ## File to create
 
 Single file at:
-`/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas/Sources/DesktopCanvas/VideoProvider.swift`
+`./desktop-canvas/Sources/DesktopCanvas/VideoProvider.swift`
 
 ### Architecture
 
@@ -267,7 +267,7 @@ final class VideoProvider: CanvasProvider {
 ## Verification
 
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift build
 ```
 

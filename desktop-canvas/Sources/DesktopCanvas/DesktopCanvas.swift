@@ -32,8 +32,7 @@ public final class DesktopCanvas {
             guard canvas.type == .gameOfLife, let config = canvas.gameOfLifeConfig else {
                 return count
             }
-            let cols = Int(floor(canvas.frame.width / CGFloat(config.cellSize)))
-            let rows = Int(floor(canvas.frame.height / CGFloat(config.cellSize)))
+            let (cols, rows) = GameOfLifeConfig.gridDimensions(for: canvas.frame, cellSize: config.cellSize)
             return count + (cols * rows)
         }
 
@@ -70,6 +69,7 @@ public final class DesktopCanvas {
     public func savePreset(_ layout: CanvasLayout, named name: String) throws {
         let url = Self.presetsDirectory().appendingPathComponent("\(name).json")
         try layout.save(to: url)
+        Self.invalidatePresetCache()
     }
 
     public func loadPreset(named name: String) throws -> CanvasLayout {
@@ -80,6 +80,7 @@ public final class DesktopCanvas {
     public func deletePreset(named name: String) throws {
         let url = Self.presetsDirectory().appendingPathComponent("\(name).json")
         try FileManager.default.removeItem(at: url)
+        Self.invalidatePresetCache()
     }
 
     public func listPresets() -> [String] {
@@ -91,6 +92,26 @@ public final class DesktopCanvas {
             .filter { $0.pathExtension == "json" && $0.lastPathComponent != "_last_used.json" }
             .map { $0.deletingPathExtension().lastPathComponent }
             .sorted()
+    }
+
+    /// Decoded layouts cached by (path, modification date) so that repeatedly
+    /// rendering the preset list does not re-parse every file.
+    private static var presetDecodeCache: [String: (mtime: Date, canvasCount: Int)] = [:]
+    private static let presetCacheLock = NSLock()
+
+    /// File modification timestamps have sub-second resolution on APFS; compare
+    /// them with a tolerance so a cache hit is never lost to a rounding
+    /// difference between two `resourceValues` reads.
+    private static func modificationDatesMatch(_ lhs: Date, _ rhs: Date) -> Bool {
+        abs(lhs.timeIntervalSince(rhs)) < 1.0
+    }
+
+    /// Drops the decoded-preset cache. Called after any write so a re-read sees
+    /// the new file.
+    private static func invalidatePresetCache() {
+        presetCacheLock.lock()
+        presetDecodeCache.removeAll()
+        presetCacheLock.unlock()
     }
 
     public func listPresetsWithMetadata() -> [PresetInfo] {
@@ -105,19 +126,38 @@ public final class DesktopCanvas {
             .compactMap { url in
                 let name = url.deletingPathExtension().lastPathComponent
                 let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
-                let layout = try? CanvasLayout.load(from: url)
-                let count = layout?.canvases.count ?? 0
+                let count = Self.cachedCanvasCount(for: url, modifiedAt: modifiedAt)
                 return PresetInfo(name: name, canvasCount: count, modifiedAt: modifiedAt)
             }
             .sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
+    /// Returns the canvas count for a preset file, decoding only when the file
+    /// changed since it was last decoded.
+    private static func cachedCanvasCount(for url: URL, modifiedAt: Date) -> Int {
+        let key = url.path
+        presetCacheLock.lock()
+        if let cached = presetDecodeCache[key],
+           Self.modificationDatesMatch(cached.mtime, modifiedAt) {
+            presetCacheLock.unlock()
+            return cached.canvasCount
+        }
+        presetCacheLock.unlock()
+
+        let count = (try? CanvasLayout.load(from: url))?.canvases.count ?? 0
+
+        presetCacheLock.lock()
+        presetDecodeCache[key] = (mtime: modifiedAt, canvasCount: count)
+        presetCacheLock.unlock()
+        return count
+    }
+
     public static func presetsDirectory() -> URL {
-        let appSupport = FileManager.default.urls(
+        let base = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first!
-        return appSupport.appendingPathComponent("DesktopCanvas/presets", isDirectory: true)
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("DesktopCanvas/presets", isDirectory: true)
     }
 
     public static func lastUsedPresetURL() -> URL {
@@ -127,7 +167,16 @@ public final class DesktopCanvas {
     public static func saveLastUsedPreset(_ layout: CanvasLayout) {
         let dir = presetsDirectory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? layout.save(to: lastUsedPresetURL())
+        let url = lastUsedPresetURL()
+        // L8: skip the write when the content is unchanged, so a frame-only drag
+        // no longer rewrites the file on every mouse-up.
+        if let existing = try? Data(contentsOf: url),
+           let encoded = try? JSONEncoder.dc.encode(layout),
+           existing == encoded {
+            return
+        }
+        try? layout.save(to: url)
+        invalidatePresetCache()
     }
 
     public static func loadLastUsedPreset() -> CanvasLayout? {

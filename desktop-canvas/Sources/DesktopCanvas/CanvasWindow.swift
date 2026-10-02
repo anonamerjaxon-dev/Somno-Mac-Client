@@ -5,7 +5,12 @@ final class CanvasWindow: NSWindow {
     private var renderers: [UUID: CanvasRenderer] = [:]
     private var providers: [UUID: any CanvasProvider] = [:]
 
+    /// The screen this window covers, re-read on every layout pass so a
+    /// display re-configuration cannot leave stale geometry behind.
+    private let coveredScreen: NSScreen
+
     init(screen: NSScreen) {
+        self.coveredScreen = screen
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless],
@@ -67,6 +72,15 @@ final class CanvasWindow: NSWindow {
         contentView?.setNeedsDisplay(contentView?.bounds ?? .zero)
     }
 
+    /// Re-anchors the window to a new screen frame after a display
+    /// re-configuration. Window level, ordering and collection behaviour are
+    /// deliberately left untouched so the desktop stays spike-faithful.
+    func reframe(to newFrame: CGRect) {
+        guard newFrame != frame else { return }
+        setFrame(newFrame, display: true)
+        contentView?.setNeedsDisplay(contentView?.bounds ?? .zero)
+    }
+
     func setBackgroundColor(_ color: NSColor?) {
         guard let color else {
             backgroundColor = .clear
@@ -77,9 +91,14 @@ final class CanvasWindow: NSWindow {
         contentView?.layer?.backgroundColor = color.cgColor
     }
 
+    /// Places `canvases` inside this window. Frames arrive in global canvas
+    /// coordinates and are translated into the window's screen-local space
+    /// (see `ScreenGeometry`) so a secondary display no longer receives a full
+    /// copy of the primary display's layout.
     func layoutCanvases(_ canvases: [CanvasModel]) {
         guard let contentView = contentView else { return }
 
+        let screenFrame = coveredScreen.frame
         let newIDs = Set(canvases.map(\.id))
         let oldIDs = Set(renderers.keys)
 
@@ -124,7 +143,7 @@ final class CanvasWindow: NSWindow {
             guard let renderer = renderers[canvas.id],
                   let provider = providers[canvas.id] else { continue }
             provider.canvas = canvas
-            renderer.frame = canvas.frame
+            renderer.frame = ScreenGeometry.localFrame(for: canvas.frame, in: screenFrame)
             provider.update()
         }
 

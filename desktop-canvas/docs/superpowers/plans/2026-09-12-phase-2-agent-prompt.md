@@ -15,7 +15,7 @@ After you're done, verify with `swift build` in the desktop-canvas directory. Mu
 You're working on the **Somno Mac Client** monorepo at:
 
 ```
-/Users/jackson/Desktop/work related/claude/something client mac/
+./
 ```
 
 **DesktopCanvas** renders dynamic content (MP4 videos + Game of Life procedural art) behind macOS desktop icons, using a desktop-level `NSWindow`. Think "video wallpaper" + "Conway's Game of Life art" on the desktop.
@@ -92,7 +92,7 @@ CanvasWindow (Phase 5, future)
 ## Files to create
 
 All paths are relative to repo root:
-`/Users/jackson/Desktop/work related/claude/something client mac/`
+`./`
 
 ### File 1: `desktop-canvas/Sources/DesktopCanvas/CanvasProvider.swift`
 
@@ -172,7 +172,7 @@ Notes:
 After creating both files, run:
 
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift build
 ```
 

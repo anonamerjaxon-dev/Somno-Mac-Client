@@ -12,7 +12,7 @@ After done: `swift build` must pass with zero errors, zero warnings.
 
 ## Project context
 
-**Repo root:** `/Users/jackson/Desktop/work related/claude/something client mac/`
+**Repo root:** `./`
 **Module:** `desktop-canvas/`
 **What:** DesktopCanvas renders dynamic content behind macOS desktop icons.
 
@@ -77,7 +77,7 @@ Do NOT use `CGWindowLevelForKey(.desktopIconWindow) - 1` — the design spec use
 ## Files to create
 
 All paths relative to:
-`/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas/Sources/DesktopCanvas/`
+`./desktop-canvas/Sources/DesktopCanvas/`
 
 ### File 1: `CanvasWindow.swift`
 
@@ -389,7 +389,7 @@ final class DesktopCanvas {
 ## Verification
 
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift build
 ```
 
@@ -431,7 +431,7 @@ DesktopCanvas.shared.apply(layout: layout)
 
 Run with:
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift run -c release /tmp/TestDesktopCanvas.swift
 ```
 

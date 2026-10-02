@@ -215,6 +215,8 @@ final class EditorState: ObservableObject {
         case .gameOfLife:
             var frame = fullFrame
             if let config = canvas.gameOfLifeConfig {
+                // `cellSize` is clamped to ≥ 2 by `GameOfLifeConfig`, so the
+                // divisions below cannot divide by zero on a corrupt preset.
                 let cellSize = CGFloat(config.cellSize)
                 let snappedW = floor(frame.width / cellSize) * cellSize
                 let snappedH = floor(frame.height / cellSize) * cellSize
@@ -269,6 +271,26 @@ final class EditorState: ObservableObject {
         DesktopCanvas.shared.stop()
         isApplied = false
         setStatus("Stopped", type: .info)
+    }
+
+    /// Re-frames the already-running desktop canvases after an edit.
+    ///
+    /// Unlike `applyToDesktop()` this keeps the existing windows, providers and
+    /// video players alive, so it is what drag/resize commits use. The layout it
+    /// builds carries `backgroundColor`, and the result is surfaced to the user
+    /// instead of being dropped.
+    func refreshDesktop() {
+        let layout = CanvasLayout(name: "Current", canvases: canvases, backgroundColor: backgroundColor)
+        let overlaps = OverlapResolver.detectOverlaps(in: canvases)
+        if let first = overlaps.first {
+            let names = canvases.filter { $0.id == first.0 || $0.id == first.1 }
+                .enumerated()
+                .map { "\($0.element.type == .video ? "Video" : "Game of Life") \($0.offset + 1)" }
+            let suffix = overlaps.count > 1 ? " (and \(overlaps.count - 1) more)" : ""
+            setStatus("⚠️ \(names.joined(separator: " overlaps "))\(suffix)", type: .warning)
+        }
+        DesktopCanvas.shared.refresh(with: layout)
+        isApplied = true
     }
 
     private var applyWorkItem: DispatchWorkItem?

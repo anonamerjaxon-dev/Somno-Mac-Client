@@ -20,12 +20,13 @@ class LoopTestDelegate: NSObject, NSApplicationDelegate {
         print("This test loops a video 20 times and measures gaps at loop boundaries.")
         print("You must provide a short MP4 file (3-10 seconds).\n")
 
-        let testVideoPath = "/Users/jackson/Desktop/【动态设计】About MC....mp4"
+        // Pass the video to loop: `swift run LoopTest /path/to/video.mp4`
+        let testVideoPath = CommandLine.arguments.dropFirst().first ?? ""
 
-        guard FileManager.default.fileExists(atPath: testVideoPath) else {
-            print("ERROR: No test video found at \(testVideoPath)")
-            print("Please copy a short MP4 to that path, or edit this file to point to one.")
-            print("Example: cp ~/Movies/some_short_video.mp4 /tmp/test_loop_video.mp4\n")
+        guard !testVideoPath.isEmpty,
+              FileManager.default.fileExists(atPath: testVideoPath) else {
+            print("ERROR: No test video found at \(testVideoPath.isEmpty ? "<no path given>" : testVideoPath)")
+            print("Usage: swift run LoopTest /path/to/short_video.mp4  (3-10 seconds)")
             print("Press Cmd+Q to quit.")
             createPlaceholderWindow()
             return

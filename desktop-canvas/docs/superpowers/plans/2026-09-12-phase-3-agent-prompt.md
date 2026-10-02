@@ -16,7 +16,7 @@ After done: `swift build` must pass with zero errors, zero warnings.
 
 ## Project context
 
-**Repo root:** `/Users/jackson/Desktop/work related/claude/something client mac/`
+**Repo root:** `./`
 **Module:** `desktop-canvas/`
 **What:** DesktopCanvas renders dynamic content behind macOS desktop icons. MP4 videos + Game of Life.
 
@@ -77,7 +77,7 @@ Key lessons from Phase 0:
 ## File to create
 
 Single file at:
-`/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas/Sources/DesktopCanvas/GameOfLifeProvider.swift`
+`./desktop-canvas/Sources/DesktopCanvas/GameOfLifeProvider.swift`
 
 ### Architecture
 
@@ -302,7 +302,7 @@ fragment float4 gameOfLifeFragment(
 ## Verification
 
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
+cd "./desktop-canvas"
 swift build
 ```
 

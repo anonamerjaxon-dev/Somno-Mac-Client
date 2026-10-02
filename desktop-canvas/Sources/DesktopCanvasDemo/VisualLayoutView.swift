@@ -24,12 +24,58 @@ struct VisualLayoutView: NSViewRepresentable {
         var dragHandle: ResizeHandle?
         var dragStartOrigin: CGPoint = .zero
         var dragStartSize: CGSize = .zero
+        /// Canvas the most recent collision flash was drawn for, and when.
+        private(set) var flashCanvasID: UUID?
+        private(set) var flashExpiresAt: Date?
 
         init(state: EditorState) {
             self.state = state
         }
 
-        func snapEngine(for screen: NSScreen, excluding id: UUID?) -> SnapEngine {
+        private static let flashDuration: TimeInterval = 0.35
+
+        /// Pushes `rect` clear of every other canvas and reports whether a
+        /// collision had to be prevented.
+        ///
+        /// The design spec requires that no two canvases share any pixels, and
+        /// that a collision is both snapped clear and flashed. `OverlapResolver`
+        /// already computes both the detection and the push; this wires it into
+        /// the drag path. Callers that hold a modifier pass
+        /// `preferredDirection` = drag direction, which resolves a collision by
+        /// continuing the drag rather than pushing sideways.
+        @discardableResult
+        func resolveOverlaps(
+            rect: CGRect,
+            excluding canvasID: UUID,
+            preferredDirection: CGVector = .zero
+        ) -> CGRect {
+            let others = state.canvases.filter { $0.id != canvasID }
+            guard !others.isEmpty else { return rect }
+
+            let collides = others.contains { $0.frame.intersects(rect) }
+            let resolved = OverlapResolver.resolve(
+                moving: rect,
+                excluding: canvasID,
+                against: others,
+                preferredDirection: preferredDirection
+            )
+            if collides {
+                flash(canvasID)
+            }
+            return resolved
+        }
+
+        private func flash(_ canvasID: UUID) {
+            flashCanvasID = canvasID
+            flashExpiresAt = Date().addingTimeInterval(Self.flashDuration)
+        }
+
+        /// True while a collision flash is showing for `canvas`.
+        func isFlashing(_ canvasID: UUID, now: Date = Date()) -> Bool {
+            flashCanvasID == canvasID && now < (flashExpiresAt ?? .distantPast)
+        }
+
+        func snapEngine(for screen: NSScreen?, excluding id: UUID?) -> SnapEngine {
             let others = state.canvases
                 .filter { $0.id != id }
                 .map { (id: $0.id, frame: $0.frame) }
@@ -38,17 +84,19 @@ struct VisualLayoutView: NSViewRepresentable {
                 snapToScreenEdges: state.snapToScreenEdges,
                 snapToCanvasEdges: state.snapToCanvasEdges,
                 snapToGrid: state.snapEnabled,
-                screenFrame: screen.frame,
+                screenFrame: screen?.frame ?? .null,
                 otherCanvases: others,
                 margin: state.margin
             )
         }
 
         func commit() {
-            if state.isApplied {
-                let layout = CanvasLayout(name: "Current", canvases: state.canvases)
-                DesktopCanvas.shared.apply(layout: layout)
-            }
+            guard state.isApplied else { return }
+            // `refresh` re-frames the existing windows in place. `apply` would
+            // tear every window down and rebuild it, which restarts video
+            // playback, drops the running simulations, and is a known crash
+            // risk when it happens inside an AppKit drag dispatch.
+            state.refreshDesktop()
         }
     }
 }
@@ -62,6 +110,7 @@ final class LayoutNSView: NSView {
     private var dragStartPoint: CGPoint = .zero
     private var dragCanvasID: UUID?
     private var cachedScreens: [NSScreen] = []
+    private var cachedUnionFrame: CGRect = .zero
     private var cachedScale: CGFloat = 1
     private var cachedOffset: CGPoint = .zero
     private var snapGuides: [(axis: Character, position: CGFloat)] = []
@@ -120,7 +169,7 @@ final class LayoutNSView: NSView {
         let screenPoint = viewToScreen(viewPoint)
         let delta = CGPoint(x: screenPoint.x - dragStartPoint.x, y: screenPoint.y - dragStartPoint.y)
         let canvas = coordinator.state.canvases[index]
-        let screen = screenForCanvas(canvas) ?? NSScreen.main ?? cachedScreens.first!
+        let screen = screenForCanvas(canvas) ?? NSScreen.main ?? cachedScreens.first
         let engine = coordinator.snapEngine(for: screen, excluding: canvas.id)
         let commandHeld = event.modifierFlags.contains(.command)
 
@@ -141,7 +190,9 @@ final class LayoutNSView: NSView {
                     canvas: canvas
                 )
             }
-            coordinator.state.canvases[index].frame = newRect
+            coordinator.state.canvases[index].frame = commandHeld
+                ? newRect
+                : coordinator.resolveOverlaps(rect: newRect, excluding: canvas.id)
             if !commandHeld { buildSnapGuides(newRect) } else { snapGuides = [] }
         } else {
             let newOrigin = CGPoint(
@@ -157,6 +208,13 @@ final class LayoutNSView: NSView {
                 coordinator.state.canvases[index].frame.origin = snappedRect.origin
                 buildSnapGuides(snappedRect)
             }
+            if !commandHeld {
+                coordinator.state.canvases[index].frame = coordinator.resolveOverlaps(
+                    rect: coordinator.state.canvases[index].frame,
+                    excluding: canvas.id,
+                    preferredDirection: CGVector(dx: delta.x, dy: delta.y)
+                )
+            }
         }
 
         needsDisplay = true
@@ -170,6 +228,11 @@ final class LayoutNSView: NSView {
         coordinator?.dragHandle = nil
         coordinator?.commit()
         NSCursor.arrow.set()
+        // Clears the collision flash once its duration has elapsed, since no
+        // further mouse event is guaranteed to arrive.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.needsDisplay = true
+        }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -199,6 +262,7 @@ final class LayoutNSView: NSView {
         for screen in cachedScreens {
             unionRect = unionRect.union(screen.frame)
         }
+        cachedUnionFrame = unionRect
 
         let pad: CGFloat = 40
         let paddedUnion = unionRect.insetBy(dx: -pad, dy: -pad)
@@ -219,7 +283,7 @@ final class LayoutNSView: NSView {
 
         for canvas in coordinator.state.canvases {
             let isSelected = canvas.id == coordinator.state.selectedCanvasID
-            drawCanvas(canvas, isSelected: isSelected, scale: cachedScale, offset: cachedOffset)
+            drawCanvas(canvas, isSelected: isSelected, scale: cachedScale, offset: cachedOffset, coordinator: coordinator)
         }
 
         for guide in snapGuides {
@@ -251,7 +315,13 @@ final class LayoutNSView: NSView {
         (label as NSString).draw(at: labelPoint, withAttributes: attrs)
     }
 
-    private func drawCanvas(_ canvas: CanvasModel, isSelected: Bool, scale: CGFloat, offset: CGPoint) {
+    private func drawCanvas(
+        _ canvas: CanvasModel,
+        isSelected: Bool,
+        scale: CGFloat,
+        offset: CGPoint,
+        coordinator: VisualLayoutView.Coordinator?
+    ) {
         let rect = scaledRect(canvas.frame, scale: scale, offset: offset)
 
         let fillColor: NSColor = switch canvas.type {
@@ -306,21 +376,32 @@ final class LayoutNSView: NSView {
                 NSBezierPath(ovalIn: hRect).fill()
             }
         }
+
+        // Red flash border for the 0.35s after a collision was snapped clear,
+        // as the design spec requires.
+        if coordinator?.isFlashing(canvas.id) == true {
+            let flashPath = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+            NSColor.systemRed.setStroke()
+            flashPath.lineWidth = 3
+            flashPath.stroke()
+        }
     }
 
     private func scaledRect(_ rect: CGRect, scale: CGFloat, offset: CGPoint) -> CGRect {
-        CGRect(
-            x: rect.minX * scale + offset.x,
-            y: rect.minY * scale + offset.y,
-            width: rect.width * scale,
-            height: rect.height * scale
+        ScreenGeometry.previewRect(
+            for: rect,
+            unionFrame: cachedUnionFrame,
+            scale: scale,
+            offset: offset
         )
     }
 
     private func viewToScreen(_ viewPoint: CGPoint) -> CGPoint {
-        CGPoint(
-            x: (viewPoint.x - cachedOffset.x) / cachedScale,
-            y: (viewPoint.y - cachedOffset.y) / cachedScale
+        ScreenGeometry.canvasPoint(
+            fromViewPoint: viewPoint,
+            unionFrame: cachedUnionFrame,
+            scale: cachedScale,
+            offset: cachedOffset
         )
     }
 
@@ -372,8 +453,10 @@ final class LayoutNSView: NSView {
         cachedScreens.first { $0.frame.intersects(canvas.frame) }
     }
 
+    /// Command-drag resize: no snapping and no cell multiples, but the result is
+    /// still held to the same 32pt minimum every other entry point enforces, and
+    /// the anchored corner never moves.
     private func freeCornerResize(rect: CGRect, handle: ResizeHandle, target: CGPoint, canvas: CanvasModel) -> CGRect {
-        var result = rect
         let minSize: CGFloat = 32
 
         let ratio: CGFloat?
@@ -384,36 +467,35 @@ final class LayoutNSView: NSView {
             ratio = nil
         }
 
-        switch handle {
-        case .bottomRight:
-            let newW = max(target.x - rect.minX, minSize)
-            result.size = CGSize(width: newW, height: ratio != nil ? newW / ratio! : target.y - rect.minY)
-        case .bottomLeft:
-            let newW = max(rect.maxX - target.x, minSize)
-            result = CGRect(
-                x: rect.maxX - newW, y: rect.minY,
-                width: newW,
-                height: ratio != nil ? newW / ratio! : target.y - rect.minY
-            )
-        case .topRight:
-            let newW = max(target.x - rect.minX, minSize)
-            result = CGRect(
-                x: rect.minX, y: target.y,
-                width: newW,
-                height: ratio != nil ? newW / ratio! : rect.maxY - target.y
-            )
-        case .topLeft:
-            let newW = max(rect.maxX - target.x, minSize)
-            result = CGRect(
-                x: rect.maxX - newW, y: target.y,
-                width: newW,
-                height: ratio != nil ? newW / ratio! : rect.maxY - target.y
-            )
-        case .top, .bottom, .left, .right:
-            break
+        // Signed extent from the anchored edge to the dragged point, then clamped
+        // so a drag past the anchor can never produce a negative size.
+        func clamped(_ width: CGFloat, _ height: CGFloat) -> CGSize {
+            let clampedW = max(width.isFinite ? width : minSize, minSize)
+            let clampedH = ratio != nil
+                ? clampedW / ratio!
+                : max(height.isFinite ? height : minSize, minSize)
+            return CGSize(width: clampedW, height: clampedH)
         }
 
-        return result
+        switch handle {
+        case .bottomRight:
+            let size = clamped(target.x - rect.minX, target.y - rect.minY)
+            return CGRect(x: rect.minX, y: rect.minY, width: size.width, height: size.height)
+        case .bottomLeft:
+            let size = clamped(rect.maxX - target.x, target.y - rect.minY)
+            return CGRect(x: rect.maxX - size.width, y: rect.minY,
+                          width: size.width, height: size.height)
+        case .topRight:
+            let size = clamped(target.x - rect.minX, rect.maxY - target.y)
+            return CGRect(x: rect.minX, y: rect.maxY - size.height,
+                          width: size.width, height: size.height)
+        case .topLeft:
+            let size = clamped(rect.maxX - target.x, rect.maxY - target.y)
+            return CGRect(x: rect.maxX - size.width, y: rect.maxY - size.height,
+                          width: size.width, height: size.height)
+        case .top, .bottom, .left, .right:
+            return rect
+        }
     }
 
     private func buildSnapGuides(_ rect: CGRect) {
@@ -424,7 +506,9 @@ final class LayoutNSView: NSView {
             return
         }
 
-        let threshold: CGFloat = 1.0
+        // A guide is only worth drawing when it is one of the targets the snap engine
+        // actually resolved against, so the tolerance matches `SnapEngine`'s.
+        let threshold = SnapEngine.defaultSnapThreshold
 
         guard let screen = screenForCanvas(
             CanvasModel(type: .gameOfLife, frame: rect)

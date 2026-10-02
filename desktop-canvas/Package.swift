@@ -46,6 +46,11 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("UniformTypeIdentifiers")
             ]
+        ),
+        .testTarget(
+            name: "DesktopCanvasTests",
+            dependencies: ["DesktopCanvas"],
+            path: "Tests/DesktopCanvasTests"
         )
     ]
 )

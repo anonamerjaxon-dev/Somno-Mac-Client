@@ -116,12 +116,15 @@ struct CanvasSettingsView: View {
         return size.width / size.height
     }
 
+    /// - Parameter onChange: receives the value verbatim. Callers clamp what
+    ///   needs clamping, because canvas origins are legitimately negative on a
+    ///   multi-display desktop.
     private func labeledField(_ label: String, value: CGFloat, onChange: @escaping (CGFloat) -> Void) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundColor(.secondary)
             TextField("", value: Binding(
                 get: { value },
-                set: { onChange(max(0, $0)) }
+                set: { onChange($0) }
             ), formatter: NumberFormatter.integer)
             .textFieldStyle(.roundedBorder)
             .frame(width: 72)

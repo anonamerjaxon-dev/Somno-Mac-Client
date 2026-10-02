@@ -10,17 +10,11 @@ struct SnapEngine {
     var screenFrame: CGRect
     var otherCanvases: [(id: UUID, frame: CGRect)]
     var margin: CGFloat
-    var snapThreshold: CGFloat = 6
+    var snapThreshold: CGFloat = SnapEngine.defaultSnapThreshold
 
-    func snap(_ rect: CGRect) -> CGRect {
-        var result = rect
-        result.origin = snapPoint(result.origin, excluding: nil)
-        return result
-    }
-
-    func snapOrigin(_ origin: CGPoint, for size: CGSize) -> CGPoint {
-        snapPoint(origin, excluding: nil)
-    }
+    /// Shared snap tolerance. The editor's guide overlay reads this so a guide
+    /// appears exactly when the snap would fire.
+    static let defaultSnapThreshold: CGFloat = 6
 
     func snapRect(_ rect: CGRect, excluding excludedID: UUID? = nil) -> CGRect {
         var result = rect
@@ -29,10 +23,13 @@ struct SnapEngine {
     }
 
     func snapSize(_ size: CGSize, for canvas: CanvasModel) -> CGSize {
-        if canvas.type == .gameOfLife, let config = canvas.gameOfLifeConfig {
-            let cellSize = CGFloat(config.cellSize)
-            let snappedW = round(size.width / cellSize) * cellSize
-            let snappedH = round(size.height / cellSize) * cellSize
+        if canvas.type == .gameOfLife {
+            // `cellSize` is clamped to at least 2 by `GameOfLifeConfig`, but this
+            // engine is also driven from live drags, so guard the division itself.
+            let cellSize = CGFloat(canvas.gameOfLifeConfig?.cellSize ?? 8)
+            guard cellSize > 0 else { return size }
+            let snappedW = (size.width / cellSize).rounded() * cellSize
+            let snappedH = (size.height / cellSize).rounded() * cellSize
             return CGSize(
                 width: max(snappedW, 10 * cellSize),
                 height: max(snappedH, 10 * cellSize)
@@ -117,68 +114,32 @@ struct SnapEngine {
         }
 
         if snapToGrid {
-            targets.append(contentsOf: [])
+            targets.append(contentsOf: gridTargets())
         }
 
         return targets
     }
 
-    private func snapPoint(_ point: CGPoint, excluding excludedID: UUID?) -> CGPoint {
-        var best = point
-        var bestDistance = snapThreshold
+    /// Cell-multiple grid lines spanning the snapping area.
+    ///
+    /// The drag is resolved against these exactly like every other snap target,
+    /// so the grid toggle snaps edges and corners rather than origins only.
+    private func gridTargets() -> [CGFloat] {
+        guard gridSize > 0, gridSize.isFinite else { return [] }
+        guard !screenFrame.isNull, !screenFrame.isEmpty else { return [] }
 
-        if snapToScreenEdges {
-            checkSnap(&best, &bestDistance, point, screenFrame.minX, axis: .x)
-            checkSnap(&best, &bestDistance, point, screenFrame.maxX, axis: .x)
-            checkSnap(&best, &bestDistance, point, screenFrame.minY, axis: .y)
-            checkSnap(&best, &bestDistance, point, screenFrame.maxY, axis: .y)
-            checkSnap(&best, &bestDistance, point, screenFrame.midX, axis: .x)
-            checkSnap(&best, &bestDistance, point, screenFrame.midY, axis: .y)
+        var targets: [CGFloat] = []
+        var x = (screenFrame.minX / gridSize).rounded(.down) * gridSize
+        while x <= screenFrame.maxX {
+            targets.append(x)
+            x += gridSize
         }
-
-        if snapToCanvasEdges {
-            for other in otherCanvases where other.id != excludedID {
-                let f = other.frame
-                checkSnap(&best, &bestDistance, point, f.minX - margin, axis: .x)
-                checkSnap(&best, &bestDistance, point, f.maxX + margin, axis: .x)
-                checkSnap(&best, &bestDistance, point, f.minY - margin, axis: .y)
-                checkSnap(&best, &bestDistance, point, f.maxY + margin, axis: .y)
-            }
+        var y = (screenFrame.minY / gridSize).rounded(.down) * gridSize
+        while y <= screenFrame.maxY {
+            targets.append(y)
+            y += gridSize
         }
-
-        if snapToGrid {
-            let snappedX = round(point.x / gridSize) * gridSize
-            let snappedY = round(point.y / gridSize) * gridSize
-            let dx = abs(point.x - snappedX)
-            let dy = abs(point.y - snappedY)
-            if dx < bestDistance {
-                best.x = snappedX
-                bestDistance = dx
-            }
-            if dy < bestDistance {
-                best.y = snappedY
-                bestDistance = dy
-            }
-        }
-
-        return best
-    }
-
-    private enum Axis { case x, y }
-
-    private func checkSnap(_ best: inout CGPoint, _ bestDist: inout CGFloat,
-                           _ point: CGPoint, _ target: CGFloat, axis: Axis) {
-        let distance: CGFloat
-        switch axis {
-        case .x: distance = abs(point.x - target)
-        case .y: distance = abs(point.y - target)
-        }
-        guard distance < bestDist else { return }
-        switch axis {
-        case .x: best.x = target
-        case .y: best.y = target
-        }
-        bestDist = distance
+        return targets
     }
 
     func snapCornerResize(
@@ -198,9 +159,9 @@ struct SnapEngine {
                 : 1
 
             var snappedTarget = target
-            if snapToGrid {
-                snappedTarget.x = round(target.x / gridSize) * gridSize
-                snappedTarget.y = round(target.y / gridSize) * gridSize
+            if snapToGrid, gridSize > 0, gridSize.isFinite {
+                snappedTarget.x = (target.x / gridSize).rounded() * gridSize
+                snappedTarget.y = (target.y / gridSize).rounded() * gridSize
             }
 
             switch handle {
@@ -238,9 +199,19 @@ struct SnapEngine {
         }
 
         if canvas.type == .gameOfLife {
+            // Snap the size relative to the anchored corner. Overwriting both
+            // dimensions on a corner drag would drag the origin along with them.
             let newSize = snapResizeSize(result.size, canvasID: canvas.id, canvas: canvas)
-            result.size.width = newSize.width
-            result.size.height = newSize.height
+            switch handle {
+            case .topLeft:
+                result.origin.x = result.maxX - newSize.width
+                result.origin.y = result.maxY - newSize.height
+            case .topRight, .bottomLeft:
+                result.origin.y = result.maxY - newSize.height
+            case .top, .bottom, .left, .right, .bottomRight:
+                break
+            }
+            result.size = newSize
         }
 
         return result

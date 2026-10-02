@@ -104,6 +104,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     private var bufferB: MTLBuffer!
     private var useBufferA = true
     private var needsCompute = true
+    private var setupError: Error?
 
     public private(set) var gridWidth: Int = 0
     public private(set) var gridHeight: Int = 0
@@ -114,14 +115,17 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     private let timerQueue: DispatchQueue
     private var powerStateObserver: NSObjectProtocol?
 
+    /// The reason Metal setup failed, if it did; `nil` after a successful init.
+    ///
+    /// Surfaced instead of trapping, so a machine without a usable Metal
+    /// pipeline degrades to a blank canvas rather than taking down the host app.
+    public private(set) var initializationError: Error?
+
     init(canvas: CanvasModel) {
         self.canvas = canvas
         self.timerQueue = DispatchQueue(label: "com.desktopcanvas.gol.\(canvas.id)")
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            fatalError("Metal is not supported on this device")
-        }
         let safeFrame = Self.clampedFrame(canvas.frame)
-        super.init(frame: safeFrame, device: device)
+        super.init(frame: safeFrame, device: MTLCreateSystemDefaultDevice())
         setupMetal()
         setupGrid()
         observePowerState()
@@ -151,31 +155,71 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     // MARK: - Metal Setup
 
     private func setupMetal() {
-        guard let device = device else { return }
-
         framebufferOnly = false
         clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         preferredFramesPerSecond = preferredFPS()
 
-        let library = try! device.makeLibrary(source: metalShaderSource, options: nil)
+        guard let device else {
+            record(SetupFailure.noDevice)
+            return
+        }
 
-        let computeFn = library.makeFunction(name: "gameOfLifeStep")!
-        computePipeline = try! device.makeComputePipelineState(function: computeFn)
+        do {
+            let library = try device.makeLibrary(source: metalShaderSource, options: nil)
 
-        let vertexFn = library.makeFunction(name: "fullscreenVertex")!
-        let fragmentFn = library.makeFunction(name: "gameOfLifeFragment")!
-        let rpDesc = MTLRenderPipelineDescriptor()
-        rpDesc.vertexFunction = vertexFn
-        rpDesc.fragmentFunction = fragmentFn
-        rpDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
-        renderPipeline = try! device.makeRenderPipelineState(descriptor: rpDesc)
+            guard let computeFn = library.makeFunction(name: "gameOfLifeStep"),
+                  let vertexFn = library.makeFunction(name: "fullscreenVertex"),
+                  let fragmentFn = library.makeFunction(name: "gameOfLifeFragment") else {
+                record(SetupFailure.missingShaderFunction)
+                return
+            }
 
-        let depthDesc = MTLDepthStencilDescriptor()
-        depthDesc.isDepthWriteEnabled = false
-        depthDesc.depthCompareFunction = .always
-        depthState = device.makeDepthStencilState(descriptor: depthDesc)
+            let computePipelineState = try device.makeComputePipelineState(function: computeFn)
 
-        commandQueue = device.makeCommandQueue()!
+            let rpDesc = MTLRenderPipelineDescriptor()
+            rpDesc.vertexFunction = vertexFn
+            rpDesc.fragmentFunction = fragmentFn
+            rpDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+            let renderPipelineState = try device.makeRenderPipelineState(descriptor: rpDesc)
+
+            guard let queue = device.makeCommandQueue() else {
+                record(SetupFailure.noCommandQueue)
+                return
+            }
+
+            let depthDesc = MTLDepthStencilDescriptor()
+            depthDesc.isDepthWriteEnabled = false
+            depthDesc.depthCompareFunction = .always
+
+            computePipeline = computePipelineState
+            renderPipeline = renderPipelineState
+            depthState = device.makeDepthStencilState(descriptor: depthDesc)
+            commandQueue = queue
+        } catch {
+            record(error)
+        }
+    }
+
+    private func record(_ error: Error) {
+        setupError = error
+        initializationError = error
+    }
+
+    private enum SetupFailure: LocalizedError {
+        case noDevice
+        case noCommandQueue
+        case missingShaderFunction
+
+        var errorDescription: String? {
+            switch self {
+            case .noDevice:
+                return "Metal is not available on this system."
+            case .noCommandQueue:
+                return "Metal could not create a command queue for this device."
+            case .missingShaderFunction:
+                return "The built-in Game of Life shader is missing a required function."
+            }
+        }
     }
 
     private func preferredFPS() -> Int {
@@ -183,6 +227,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     }
 
     private func observePowerState() {
+        removePowerStateObserver()
         powerStateObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name.NSProcessInfoPowerStateDidChange,
             object: nil,
@@ -192,22 +237,35 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         }
     }
 
+    private func removePowerStateObserver() {
+        if let observer = powerStateObserver {
+            NotificationCenter.default.removeObserver(observer)
+            powerStateObserver = nil
+        }
+    }
+
     // MARK: - Grid Setup
 
     private func setupGrid() {
-        guard let device = device else { return }
+        guard let device else { return }
         guard let config = canvas.gameOfLifeConfig else { return }
 
-        let frameWidth = canvas.frame.size.width
-        let frameHeight = canvas.frame.size.height
-        let cellSize = CGFloat(config.cellSize)
-
-        gridWidth = max(1, Int(floor(frameWidth / cellSize)))
-        gridHeight = max(1, Int(floor(frameHeight / cellSize)))
+        let (cols, rows) = GameOfLifeConfig.gridDimensions(
+            for: canvas.frame,
+            cellSize: config.cellSize
+        )
+        gridWidth = cols
+        gridHeight = rows
 
         let totalCells = gridWidth * gridHeight
-        bufferA = device.makeBuffer(length: totalCells, options: .storageModeShared)!
-        bufferB = device.makeBuffer(length: totalCells, options: .storageModeShared)!
+        guard totalCells > 0,
+              let newBufferA = device.makeBuffer(length: totalCells, options: .storageModeShared),
+              let newBufferB = device.makeBuffer(length: totalCells, options: .storageModeShared) else {
+            record(SetupFailure.noCommandQueue)
+            return
+        }
+        bufferA = newBufferA
+        bufferB = newBufferB
 
         seedGrid()
     }
@@ -292,10 +350,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     }
 
     func detach() {
-        if let observer = powerStateObserver {
-            NotificationCenter.default.removeObserver(observer)
-            powerStateObserver = nil
-        }
+        removePowerStateObserver()
         if isTimerRunning {
             timer?.cancel()
             isTimerRunning = false
@@ -310,12 +365,10 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     func update() {
         guard let config = canvas.gameOfLifeConfig else { return }
 
-        let frameWidth = canvas.frame.size.width
-        let frameHeight = canvas.frame.size.height
-        let cellSize = CGFloat(config.cellSize)
-
-        let newGridWidth = max(1, Int(floor(frameWidth / cellSize)))
-        let newGridHeight = max(1, Int(floor(frameHeight / cellSize)))
+        let (newGridWidth, newGridHeight) = GameOfLifeConfig.gridDimensions(
+            for: canvas.frame,
+            cellSize: config.cellSize
+        )
 
         self.frame = Self.clampedFrame(canvas.frame)
 
@@ -336,7 +389,13 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         }
     }
 
+    /// Restarts the simulation timer unless the user paused it in the editor.
+    ///
+    /// `config.paused` is the authoritative flag: without this check a
+    /// sleep/wake cycle (or any other `resume()` caller) would silently un-pause
+    /// a frozen canvas.
     public func resume() {
+        guard canvas.gameOfLifeConfig?.paused != true else { return }
         if !isTimerRunning {
             timer?.resume()
             isTimerRunning = true
@@ -346,18 +405,22 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     // MARK: - Grid Reallocation
 
     private func reallocateGrid(width: Int, height: Int) {
-        guard let device = device else { return }
+        guard let device = device, let oldBufferA = bufferA else { return }
 
         let oldWidth = gridWidth
         let oldHeight = gridHeight
-        let oldBufA = bufferA!
+        let oldBufA = oldBufferA
+
+        let newTotal = width * height
+        guard newTotal > 0,
+              let newBufferA = device.makeBuffer(length: newTotal, options: .storageModeShared),
+              let newBufferB = device.makeBuffer(length: newTotal, options: .storageModeShared) else {
+            record(SetupFailure.noCommandQueue)
+            return
+        }
 
         gridWidth = width
         gridHeight = height
-
-        let newTotal = width * height
-        let newBufferA = device.makeBuffer(length: newTotal, options: .storageModeShared)!
-        let newBufferB = device.makeBuffer(length: newTotal, options: .storageModeShared)!
 
         let newPtrA = newBufferA.contents().assumingMemoryBound(to: UInt8.self)
         let oldPtrA = oldBufA.contents().assumingMemoryBound(to: UInt8.self)
@@ -400,8 +463,13 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
 
     // MARK: - Grid Mutation API
 
-    private func currentBufferPtr() -> UnsafeMutablePointer<UInt8> {
-        (useBufferA ? bufferA! : bufferB!).contents().assumingMemoryBound(to: UInt8.self)
+    private func currentBuffer() -> MTLBuffer? {
+        useBufferA ? bufferA : bufferB
+    }
+
+    private func withCurrentBuffer<T>(_ body: (UnsafeMutablePointer<UInt8>) -> T, default fallback: T) -> T {
+        guard let buffer = currentBuffer() else { return fallback }
+        return body(buffer.contents().assumingMemoryBound(to: UInt8.self))
     }
 
     private func markDirty() {
@@ -419,12 +487,12 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
 
     public func cellState(row: Int, col: Int) -> Bool {
         guard row >= 0, row < gridHeight, col >= 0, col < gridWidth else { return false }
-        return currentBufferPtr()[row * gridWidth + col] != 0
+        return withCurrentBuffer({ $0[row * gridWidth + col] != 0 }, default: false)
     }
 
     public func setCell(row: Int, col: Int, alive: Bool) {
         guard row >= 0, row < gridHeight, col >= 0, col < gridWidth else { return }
-        currentBufferPtr()[row * gridWidth + col] = alive ? 1 : 0
+        withCurrentBuffer({ $0[row * gridWidth + col] = alive ? 1 : 0 }, default: ())
         markDirty()
     }
 
@@ -439,14 +507,15 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         let c1 = min(gridWidth - 1, maxCol)
         guard r0 <= r1, c0 <= c1 else { return }
 
-        let ptr = currentBufferPtr()
         let value: UInt8 = alive ? 1 : 0
-        for row in r0...r1 {
-            let base = row * gridWidth
-            for col in c0...c1 {
-                ptr[base + col] = value
+        withCurrentBuffer({ ptr in
+            for row in r0...r1 {
+                let base = row * gridWidth
+                for col in c0...c1 {
+                    ptr[base + col] = value
+                }
             }
-        }
+        }, default: ())
         markDirty()
     }
 
@@ -462,60 +531,61 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         let sc = c0 < c1 ? 1 : -1
         var err = dr - dc
 
-        let ptr = currentBufferPtr()
         let value: UInt8 = alive ? 1 : 0
 
-        while true {
-            if r0 >= 0, r0 < gridHeight, c0 >= 0, c0 < gridWidth {
-                ptr[r0 * gridWidth + c0] = value
+        withCurrentBuffer({ ptr in
+            while true {
+                if r0 >= 0, r0 < gridHeight, c0 >= 0, c0 < gridWidth {
+                    ptr[r0 * gridWidth + c0] = value
+                }
+                if r0 == r1, c0 == c1 { break }
+                let e2 = 2 * err
+                if e2 > -dc { err -= dc; r0 += sr }
+                if e2 < dr { err += dr; c0 += sc }
             }
-            if r0 == r1, c0 == c1 { break }
-            let e2 = 2 * err
-            if e2 > -dc { err -= dc; r0 += sr }
-            if e2 < dr { err += dr; c0 += sc }
-        }
+        }, default: ())
         markDirty()
     }
 
     public func clearAll() {
         let total = gridWidth * gridHeight
-        memset(currentBufferPtr(), 0, total)
+        withCurrentBuffer({ memset($0, 0, total) }, default: ())
         markDirty()
     }
 
     public func randomSeed(density: Double = 0.5) {
         let total = gridWidth * gridHeight
-        let ptr = currentBufferPtr()
-        let clampedDensity = min(max(density, 0), 1)
+        let clampedDensity = density.isFinite ? min(max(density, 0), 1) : 0.5
         let threshold = UInt8(clampedDensity * 255)
 
         let chunkSize = 4096
         var randomBuffer = [UInt8](repeating: 0, count: chunkSize)
         var offset = 0
-        while offset < total {
-            let remaining = min(chunkSize, total - offset)
-            arc4random_buf(&randomBuffer, remaining)
-            for i in 0..<remaining {
-                ptr[offset + i] = randomBuffer[i] < threshold ? 1 : 0
+        withCurrentBuffer({ ptr in
+            while offset < total {
+                let remaining = min(chunkSize, total - offset)
+                arc4random_buf(&randomBuffer, remaining)
+                for i in 0..<remaining {
+                    ptr[offset + i] = randomBuffer[i] < threshold ? 1 : 0
+                }
+                offset += remaining
             }
-            offset += remaining
-        }
+        }, default: ())
         markDirty()
     }
 
     public func writeFullGrid(_ data: [UInt8]) {
         let total = gridWidth * gridHeight
         guard data.count == total else { return }
-        _ = data.withUnsafeBytes { buf in
-            memcpy(currentBufferPtr(), buf.baseAddress!, total)
+        data.withUnsafeBytes { buf in
+            withCurrentBuffer({ memcpy($0, buf.baseAddress!, total) }, default: ())
         }
         markDirty()
     }
 
     public func gridSnapshot() -> [UInt8] {
         let total = gridWidth * gridHeight
-        let ptr = currentBufferPtr()
-        return Array(UnsafeBufferPointer(start: ptr, count: total))
+        return withCurrentBuffer({ Array(UnsafeBufferPointer(start: $0, count: total)) }, default: [])
     }
 
     // MARK: - Drawing
@@ -526,17 +596,22 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     // the CVDisplayLink-driven render loop.
 
     public override func draw(_ rect: CGRect) {
-        guard let drawable = currentDrawable,
+        // A failed Metal setup is reported through `initializationError`; the
+        // canvas stays blank instead of trapping on a force-unwrapped pipeline.
+        guard setupError == nil,
+              let config = canvas.gameOfLifeConfig,
+              let drawable = currentDrawable,
               let rpDesc = currentRenderPassDescriptor,
               let cmdBuf = commandQueue.makeCommandBuffer(),
-              let config = canvas.gameOfLifeConfig else {
+              let currentGrid = useBufferA ? bufferA : bufferB else {
             return
         }
 
-        if needsCompute {
-            let inputBuffer = useBufferA ? bufferA! : bufferB!
-            let outputBuffer = useBufferA ? bufferB! : bufferA!
-
+        if needsCompute,
+           let inputBuffer = useBufferA ? bufferA : bufferB,
+           let outputBuffer = useBufferA ? bufferB : bufferA,
+           let computePipeline,
+           let computeEncoder = cmdBuf.makeComputeCommandEncoder() {
             var gridParams = GridParams(
                 width: UInt32(gridWidth),
                 height: UInt32(gridHeight),
@@ -544,7 +619,6 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
                 survivalMask: ruleMask(from: config.ruleSet.survival)
             )
 
-            let computeEncoder = cmdBuf.makeComputeCommandEncoder()!
             computeEncoder.setComputePipelineState(computePipeline)
             computeEncoder.setBuffer(inputBuffer, offset: 0, index: 0)
             computeEncoder.setBuffer(outputBuffer, offset: 0, index: 1)
@@ -559,12 +633,16 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
             needsCompute = false
         }
 
-        let renderEncoder = cmdBuf.makeRenderCommandEncoder(descriptor: rpDesc)!
+        guard let renderPipeline,
+              let renderEncoder = cmdBuf.makeRenderCommandEncoder(descriptor: rpDesc) else {
+            return
+        }
         renderEncoder.setRenderPipelineState(renderPipeline)
         renderEncoder.setDepthStencilState(depthState)
 
-        let currentGrid = useBufferA ? bufferA! : bufferB!
-        let scale = Float(drawableSize.width / bounds.width)
+        // A zero-width drawable (window off-screen or mid-resize) would make
+        // this division produce ±inf / NaN and poison every fragment parameter.
+        let scale: Float = bounds.width > 0 ? Float(drawableSize.width / bounds.width) : 1
 
         var fragParams = FragmentParams(
             gridWidth: UInt32(gridWidth),

@@ -152,6 +152,11 @@ public extension CursorChanger {
     /// Resolves a manifest-relative file name, refusing `../` escapes.
     static func containedURL(for file: String, in directory: URL) -> URL? {
         let base = directory.standardizedFileURL
+        guard !file.isEmpty else { return nil }
+        // `appendingPathComponent("/etc/passwd")` silently appends rather than
+        // replacing, so an absolute manifest entry would resolve *inside* the
+        // capture folder and go unnoticed. Reject absolute paths outright.
+        guard !file.hasPrefix("/"), (file as NSString).isAbsolutePath == false else { return nil }
         let candidate = base.appendingPathComponent(file).standardizedFileURL
         guard candidate.path.hasPrefix(base.path + "/") else { return nil }
         return candidate

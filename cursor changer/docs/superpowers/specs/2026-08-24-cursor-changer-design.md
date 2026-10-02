@@ -1,8 +1,8 @@
-# Polymorph — Custom Cursor Replacement Module
+# CursorChanger — Custom Cursor Replacement Module
 
 **Date:** 2026-08-24
 **Status:** Approved design, pending implementation plan
-**Module:** `polymorph/` (Somno Mac Client)
+**Module:** `cursor changer/` (Somno Mac Client). Renamed from `polymorph/` — targets and types are `CursorChanger*`.
 
 ## Problem
 
@@ -48,21 +48,27 @@ WindowServer itself. Consequences:
 SwiftPM package, mirroring the CursorTrail module layout:
 
 ```
-polymorph/
+cursor changer/
 ├── CLAUDE.md, README.md, Package.swift, build.sh
 ├── Sources/
-│   ├── Polymorph/                 — Swift library target
-│   │   ├── Polymorph.swift        — entry: apply(theme:) -> ApplyReport, restore()
+│   ├── CursorChanger/             — Swift library target
+│   │   ├── CursorChanger.swift    — entry: apply(theme:) -> ApplyReport, restore()
 │   │   ├── CursorTheme.swift      — folder loading, validation, model
 │   │   ├── CursorState.swift      — enum of states: file stems + CGS names/aliases
 │   │   └── ThemeImageLoader.swift — SVG/PNG → CGImage at 1x/2x
 │   (CGSBridge.swift uses dlopen/dlsym instead of a C interop target;
 │    symbols resolve across CoreGraphics AND ApplicationServices —
 │    CoreCursorUnregisterAll exports from ApplicationServices)
-├── Examples/PolymorphDemo/main.swift + DemoUI.swift
-│       SwiftUI menu-bar-style app: choose skin folder, Apply, Restore,
-│       per-state status list, error log, auto-reapply-on-display-change toggle
-└── Tests/PolymorphTests/          — custom assertion harness (repo style, NOT XCTest)
+├── Examples/CursorChangerAgent/main.swift
+│       Menu-bar (NSStatusItem) agent: choose skin folder, Apply, Restore,
+│       per-state status, error log, coverage modes, auto-reapply-on-display-
+│       change, per-connection "apply to frontmost app" action
+├── Examples/CursorChangerDemo/main.swift
+│       SwiftUI demo app (WindowGroup + buttons). It is a single file; the
+│       "DemoUI.swift" named in the original draft was never created.
+├── Sources/CursorChangerCLI/main.swift
+│       One-shot CLI: apply / restore / capture / debug (+ --help)
+└── Tests/TestRunner/main.swift    — custom assertion harness (repo style, NOT XCTest)
 ```
 
 ## Skin format
@@ -95,14 +101,24 @@ Rules:
   system default. `arrow` is the only *required* image (a skin replacing
   nothing would be pointless).
 - Hotspot values are `[x, y]` in points, **top-left origin** (what you see when
-  editing the image). Library converts to CGS coordinate order internally.
+  editing the image).
+  CORRECTION (2026-09): the library does **not** convert to CGS coordinate
+  order. The hotspot is passed through to `CGSRegisterCursorWithImages`
+  unchanged, because the CGS API takes its hotspot in the same top-left-origin
+  point space.
 - Default hotspot per state = `hotSpot` of the corresponding built-in
   `NSCursor` instance, queried at runtime (authoritative, never hardcoded).
   States without an NSCursor equivalent default to the image center.
 - `sizes`: square edge length in points per state; defaults come from the
-  matching system cursor's image size, else capped at 32pt.
+  matching system cursor's image size. Values must be finite and between 1 and
+  1024 pt (`CursorTheme.maximumCursorPointSize`); larger values are a hard
+  error, because the rasterizer allocates `size × 2` pixels per side.
 - Validation errors (surface in demo UI): missing `arrow.*`, unknown key in
-  `hotspots`, unreadable/corrupt image. Warning only: 2x size ≠ 2× 1x size.
+  `hotspots` or `sizes`, size out of range, unreadable/corrupt image, and a
+  rasterized bitmap whose edge exceeds 2048 px.
+  CORRECTION (2026-09): the original draft promised a warning when a supplied
+  `@2x` image is not exactly 2× the 1x image. That warning was never
+  implemented and is not present today.
 
 ## Cursor states (v0.1 full set, static)
 
@@ -126,16 +142,16 @@ File stem → CGS registered name(s); aliases registered together:
 
 Verified against MaCursor's MACCursorDefs.m tables: modern macOS exposes both
 named (`com.apple.coregraphics.*`) and indexed (`com.apple.cursor.N`) registry
-entries; Polymorph registers both per state. Live smoke test on this machine:
+entries; CursorChanger registers both per state. Live smoke test on this machine:
 all 24 registrations returned success.
 
 ## Apply / restore flow
 
-1. `Polymorph.apply(theme:)`: load folder → validate → for each state:
+1. `CursorChanger.apply(theme:)`: load folder → validate → for each state:
    rasterize SVG/PNG to 1x (+2x) `CGImage`s → register via CGS with hotspot
    (custom override or NSCursor-derived default), frameCount 1 → collect result.
    Returns `ApplyReport` (per-state success/error) shown in demo UI.
-2. `Polymorph.restore()`: `CoreCursorUnregisterAll(CGSMainConnectionID())`.
+2. `CursorChanger.restore()`: `CoreCursorUnregisterAll(CGSMainConnectionID())`.
 3. While the demo app runs: `CGDisplayRegisterReconfigurationCallback`
    triggers re-apply + cursor-scale nudge (`CGSSetCursorScale(s+ε)` then
    restore) — Mousecape's refresh trick. Registration persists until
@@ -143,8 +159,12 @@ all 24 registrations returned success.
 
 ## Error handling
 
-- Every CGS call checked against `kCGErrorSuccess`; failures reported
-  per-state, apply continues with remaining states.
+- Every CGS call is checked against `kCGErrorSuccess`; failures are reported
+  per-state, apply continues with the remaining states, and each failing call
+  is logged through `CursorChanger.diagnosticLogger`.
+  CORRECTION (2026-09): the original draft claimed this unconditionally, but
+  many call sites discarded the `CGError` with `_ =`. Those discards are gone;
+  the values are now captured and logged.
 - Restore is always available; reboot clears everything (no persistence risk).
 - Unknown macOS versions: if a name fails to register, report which; do not
   crash. A future settings pane could map custom names, out of scope v0.1.
@@ -162,6 +182,6 @@ all 24 registrations returned success.
 
 ## Documentation deliverables
 
-- `polymorph/README.md` — usage, skin format spec, example skin, limitations.
-- `polymorph/CLAUDE.md` — commands, architecture, private-API cautions.
-- Root `README.md` — move Polymorph from Planned to Existing.
+- `cursor changer/README.md` — usage, skin format spec, example skin, limitations.
+- `cursor changer/CLAUDE.md` — commands, architecture, private-API cautions.
+- Root `README.md` — move CursorChanger from Planned to Existing.

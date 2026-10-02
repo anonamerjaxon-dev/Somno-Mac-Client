@@ -1,4 +1,4 @@
-# CursorFX (Polymorph)
+# CursorFX (CursorChanger)
 
 System-wide custom cursor replacement for macOS. Replaces the stock arrow,
 ibeam, pointing hand, and more with custom PNG/SVG artwork — system-wide,
@@ -37,8 +37,9 @@ stock cursor from its own internal cache. The `CGSRegisterCursorWithImages`
 call succeeds and the image is in WindowServer memory, but the system resolves
 cursors through a higher-priority path during normal app focus.
 
-**What we've tried:**
-- Enforcement timer (re-register every 1.5s) — the system wins every frame
+**What was tried:**
+- Enforcement timer that *only* re-registered — the system still won, because
+  registration alone does not make a cursor *active*.
 - `setDockCursorOverride` — no effect on stock resolution
 - `setSystemDefinedCursor` — no effect
 - Cursor scale nudge (scale-bump trick) — forces a cursor re-eval but only
@@ -46,18 +47,31 @@ cursors through a higher-priority path during normal app focus.
 - Re-registering into both named (`com.apple.coregraphics.Arrow`) and indexed
   (`com.apple.cursor.0`) slots
 
-**Ideas for next session:**
-- Per-connection cursor registration (not just global) — `CGSConnectionID`
-  level instead of main connection
-- Accessibility API / event tap to detect cursor changes and immediately
-  re-register
-- Explore integer-slot `CGSSetCoreCursor` path (slots 0-43)
+**What fixed it:** every enforcement tick now repeats the *whole* activation
+sequence, not just the registration. Each tick re-registers the images and then
+re-asserts activation via `CGSSetRegisteredCursor` + `CoreCursorSet` for every
+slot the skin owns, plus `setDockCursorOverride` / `setSystemDefinedCursor` and
+the scale bump. `CursorChanger.reassert()` does the same thing on demand, and
+the agent calls it on click (Coverage = Standard/Continuous) as well as on app
+switch.
+
+**Remaining ideas:**
+- Per-connection cursor registration — `applyToFrontmost` in the agent
+  registers on the frontmost app's own `CGSConnectionID`; it needs Accessibility
+  / Screen Recording permission and is exposed as a menu item.
 - Investigate whether `CG` vs `CGS` functions hit different cache layers
 - Can we warm or clear the internal cursor cache before the system resolves?
 
-> This is the #1 priority for the next work session. Everything else in the
-> module (image loading, state mapping, skin format, CGS bridge) works
-> correctly.
+## Executables
+
+This package builds **three executables** plus one library:
+
+| Executable | Target | What it is |
+|---|---|---|
+| `CursorChangerAgent` | `Examples/CursorChangerAgent` | Menu-bar agent (the recommended way to use this). Lives in the status bar, applies the saved skin at login, re-asserts on app switch and on clicks, and can relaunch other apps with the skin applied. |
+| `CursorChangerDemo` | `Examples/CursorChangerDemo` | SwiftUI demo app with buttons: Choose Skin Folder… / Apply / Restore System Defaults / Refresh Dock + Finder. |
+| `CursorChangerCLI` | `Sources/CursorChangerCLI` | One-shot scriptable commands: `apply`, `restore`, `capture`, `debug`. Run `swift run CursorChangerCLI --help` for the full usage text. |
+| `CursorChanger` | `Sources/CursorChanger` | The library every executable above links against. |
 
 ## Commands
 
@@ -65,15 +79,30 @@ cursors through a higher-priority path during normal app focus.
 ./build.sh                  # build + run test harness
 swift build
 swift run TestRunner        # self-hosted assertions
-swift run PolymorphDemo     # GUI: pick skin folder, Apply/Restore
+
+# Menu-bar agent (recommended)
+swift run CursorChangerAgent
+
+# SwiftUI demo GUI: pick skin folder, Apply/Restore
+swift run CursorChangerDemo
+
+# One-shot CLI
+swift run CursorChangerCLI --help
+swift run CursorChangerCLI apply ~/Skins/tuff
+swift run CursorChangerCLI restore
 ```
 
 Quick test with the bundled Tuff Icons skin:
 
 ```bash
-swift run PolymorphDemo
+swift run CursorChangerDemo
 # Click "Choose Skin Folder…", select Examples/Skins/Tuff, then Apply.
 ```
+
+The agent auto-discovers `Examples/Skins/Tuff` relative to its own executable,
+so `swift run CursorChangerAgent` works from a clean checkout with no skin
+selected. Override it with the `CURSOR_CHANGER_SKIN` environment variable or the
+status-bar "Choose Skin…" item.
 
 ## Skin format
 
@@ -108,21 +137,25 @@ Only provided states are replaced; everything else keeps the system default.
 - `hotspots`: `[x, y]` in points from the image's top-left corner. Defaults
   queried from `NSCursor.hotSpot` at runtime.
 - `sizes`: edge length in points (square). Defaults from the matching system
-  cursor's size.
+  cursor's size. Values must be between **1 and 1024 pt** — anything larger
+  (including non-finite values) is rejected with an explicit error instead of
+  being handed to the rasterizer, which would try to allocate a bitmap of
+  `size × 2` pixels on each side.
 
 ## Library API
 
 ```swift
-import Polymorph
+import CursorChanger
 
-let theme = try CursorTheme.load(directory: URL(fileURLWithPath: "~/Skins/tuff"))
-let report = try Polymorph.apply(theme: theme)   // ApplyReport with per-state results
+// A leading ~ is expanded, so the path from the README always works.
+let theme = try CursorTheme.load(skinPath: "~/Skins/tuff")
+let report = try CursorChanger.apply(theme: theme)   // ApplyReport with per-state results
 print(report.summary)
-try Polymorph.restore()                          // back to stock cursors
+try CursorChanger.restore()                          // back to stock cursors
 
-// Optional: keep re-asserting the skin every 1.5s (known issue — see above)
-Polymorph.startEnforcement(theme: theme)
-Polymorph.stopEnforcement()
+// Optional: keep re-asserting the skin every 1.5s.
+CursorChanger.startEnforcement(theme: theme)
+CursorChanger.stopEnforcement()
 ```
 
 ## Architecture
@@ -133,7 +166,7 @@ Polymorph.stopEnforcement()
 | `CursorState` | Maps 18 cursor states to CGS names and integer slot IDs |
 | `CursorTheme` | Folder loading, validation, hotspot/size resolution |
 | `ThemeImageLoader` | NSImage → CGImage rasterization at 1x/2x |
-| `Polymorph` | apply/restore/reassert/enforce entry points |
+| `CursorChanger` | apply/restore/reassert/enforce entry points |
 | `DisplayChangeMonitor` | CGDisplayReconfigurationCallback for display change events |
 | `StockCapture` | Captures stock cursor state for restore |
 | `Diagnostics` | Logging and debugging utilities |

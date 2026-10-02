@@ -344,7 +344,7 @@ public enum CursorChanger {
                     true,
                     registration.pointSize,
                     registration.hotspot,
-                    registration.images.count,
+                    min(staticCursorFrameCount, max(1, registration.images.count)),
                     0,
                     registration.images as CFArray,
                     &seed
@@ -436,6 +436,13 @@ public enum CursorChanger {
             retinaURL: cursor.retinaFile,
             pointSize: cursor.pointSize
         )
+        // `frameCount` counts ANIMATION frames, so it must agree with what the array
+        // actually holds. This skin pipeline produces scale variants (1x and
+        // @2x of the same artwork), not a frame sequence; passing
+        // `images.count` would claim an animation the skin does not have, and
+        // passing 1 alongside a multi-entry array is internally inconsistent.
+        // A static cursor has exactly one frame.
+        let frameCount = min(staticCursorFrameCount, max(1, images.count))
         return cursor.state.cgsNames.map { name in
             var seed: Int32 = 0
             let err = name.withCString { cName in
@@ -446,7 +453,7 @@ public enum CursorChanger {
                     true,
                     cursor.pointSize,
                     cursor.hotspot,
-                    images.count,
+                    frameCount,
                     0,
                     images as CFArray,
                     &seed

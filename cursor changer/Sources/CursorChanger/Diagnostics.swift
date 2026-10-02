@@ -150,12 +150,14 @@ public extension CursorChanger {
 /// and is only safe to mutate on the main thread. Everything that rasterizes
 /// cursors funnels through here, on every thread.
 public enum CursorChangerRendering {
-    /// The thread that first asked for AppKit; treated as the main thread for
-    /// the purposes of the precondition below.
-    static let renderingThread: Thread = Thread.current
-
     /// Runs `work` on the main thread and waits, preserving the caller's
     /// synchronous contract. Re-entrant calls run inline to avoid deadlock.
+    ///
+    /// Note: AppKit work genuinely must be on the main thread, so a caller that
+    /// *blocks* the main thread while waiting for a background rasterizer will
+    /// deadlock by construction. Callers that need the background path must pump
+    /// the run loop instead of blocking it (see `waitForMainThreadWork` in the
+    /// test runner).
     public static func onMainThread<T>(_ work: () throws -> T) throws -> T {
         if Thread.isMainThread {
             return try work()

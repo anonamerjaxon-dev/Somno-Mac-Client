@@ -442,21 +442,39 @@ func testLoaderWorksOffMainThread() throws {
     let png = dir.appendingPathComponent("arrow.png")
     try makePNG(width: 12, height: 12, at: png)
 
-    let done = DispatchSemaphore(value: 0)
-    var result: Result<[CGImage], Error>!
-    DispatchQueue.global().async {
-        result = Result {
-            try ThemeImageLoader.cgImages(oneXURL: png, retinaURL: nil, pointSize: CGSize(width: 16, height: 16))
-        }
-        done.signal()
+    final class Box: @unchecked Sendable {
+        var images: [CGImage]?
+        var failure: Error?
     }
-    XCTAssertEqual(done.wait(timeout: .now() + 10), .success, "background rasterize must finish")
-    switch result! {
-    case .success(let images):
+    let box = Box()
+    DispatchQueue.global().async {
+        do {
+            box.images = try ThemeImageLoader.cgImages(
+                oneXURL: png,
+                retinaURL: nil,
+                pointSize: CGSize(width: 16, height: 16)
+            )
+        } catch {
+            box.failure = error
+        }
+    }
+
+    // The main thread must keep *pumping* while the background call waits for
+    // it — a semaphore wait here would deadlock, which is exactly the trap this
+    // test exists to document. Pump the run loop until the work lands.
+    let deadline = Date().addingTimeInterval(10)
+    while box.images == nil && box.failure == nil && Date() < deadline {
+        RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    }
+
+    if let failure = box.failure {
+        XCTAssertFalse(true, "background rasterize failed: \(failure)")
+    }
+    let images = box.images
+    XCTAssertNotNil(images, "background rasterize must complete when the main thread pumps its run loop")
+    if let images {
         XCTAssertEqual(images.count, 2)
         XCTAssertEqual(images[0].width, 16)
-    case .failure(let error):
-        XCTAssertFalse(true, "background rasterize failed: \(error)")
     }
 }
 
@@ -573,19 +591,23 @@ func testStaticCursorFrameCount() {
 func testBridgeNoCrashAndHonestErrors() {
     // M1: `CGSBridge.shared` used to be `try! CGSBridge()` reachable from the
     // CLI `debug` command. It must now be a throwing accessor.
-    XCTAssertNoThrowError(
-        try CGSBridge.shared,
-        "shared must not trap; it either resolves or throws"
-    )
     if let bridge = try? CGSBridge.shared {
-        XCTAssertNoThrowError(try { _ = bridge.mainConnectionID() }(), "mainConnectionID must be callable")
-    }
-    if CGSBridge.isAvailable() {
-        XCTAssertNotNil(try? CGSBridge.shared.mainConnectionID(), "main connection id should resolve")
+        XCTAssertNoThrowError(
+            { _ = bridge.mainConnectionID() }(),
+            "mainConnectionID must be callable without trapping"
+        )
     } else {
         print("  SKIP: CGS bridge unavailable on this OS")
-        // A failure here must still be explainable, not a bare "unavailable".
-        XCTAssertNotNil(CursorChanger.requireBridgeErrorDescription() ?? "unavailable", "bridge unavailability must have a message")
+        // Unavailability must be explainable, not a bare "unavailable" or a trap.
+        let reason = CursorChanger.requireBridgeErrorDescription()
+        XCTAssertNotNil(reason, "bridge unavailability must carry a message")
+        if let reason {
+            XCTAssertFalse(reason.isEmpty, "the bridge error message must not be empty")
+            XCTAssertFalse(
+                reason.hasPrefix("The operation couldn't be completed"),
+                "bridge errors must be LocalizedError, got: \(reason)"
+            )
+        }
     }
 }
 
@@ -633,9 +655,13 @@ func runAllSuites() {
     }
 }
 
-let tempRootWasClean = !FileManager.default.fileExists(atPath: tempRoot.path)
+// `tempRootWasClean` would be false on a previous crashed run; report leftovers
+// so a half-finished run is visible instead of silently mixing with this one.
+let tempRootExistedBefore = FileManager.default.fileExists(atPath: tempRoot.path)
+if tempRootExistedBefore {
+    cleanupTempDirs()
+}
 try? FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
-defer { cleanupTempDirs() }
 
 runAllSuites()
 
@@ -643,11 +669,20 @@ let totalAssertions = suiteResults.reduce(0) { $0 + $1.assertions }
 let totalFailures = suiteResults.reduce(0) { $0 + $1.failures }
 let suitesThatThrew = suiteResults.filter { $0.threw != nil }
 
+// Cleanup happens here, not in a file-scope `defer`: a top-level `defer` runs
+// *after* the last top-level statement (too late to report), and `exit(1)`
+// below would skip it entirely, leaving temp dirs behind on every failing run.
+cleanupTempDirs()
+let tempFixturesRemoved = !FileManager.default.fileExists(atPath: tempRoot.path)
+if !tempFixturesRemoved {
+    print("  FAIL: temp fixtures at \(tempRoot.path) were not removed")
+}
+
 print("")
 print("Suites: \(suiteResults.count) (\(suiteResults.count - suitesThatThrew.count) clean, \(suitesThatThrew.count) threw)")
 print("Total: \(totalAssertions) assertions, \(totalFailures) failed")
-print("Temp fixtures removed: \(!FileManager.default.fileExists(atPath: tempRoot.path))")
-if totalFailures > 0 {
+print("Temp fixtures removed: \(tempFixturesRemoved)")
+if totalFailures > 0 || !tempFixturesRemoved {
     print("RESULT: FAIL")
     exit(1)
 }

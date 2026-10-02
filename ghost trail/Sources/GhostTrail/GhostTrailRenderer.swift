@@ -8,23 +8,23 @@ final class GhostTrailRenderer {
         self.configuration = configuration
     }
 
-    func draw(context: GraphicsContext, trails: [CGWindowID: RingBuffer<TrailFrame>], size: CGSize) {
+    func draw(context: GraphicsContext, trails: [CGWindowID: RingBuffer<TrailFrame>], size: CGSize, converter: TrailCoordinateConverter = .identity) {
         let now = CACurrentMediaTime()
         let baseOpacity = configuration.opacity
 
         for (_, trail) in trails {
-            drawTrail(context: context, trail: trail, now: now, baseOpacity: baseOpacity, size: size)
+            drawTrail(context: context, trail: trail, now: now, baseOpacity: baseOpacity, size: size, converter: converter)
         }
     }
 
-    private func drawTrail(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, size: CGSize) {
+    private func drawTrail(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, size: CGSize, converter: TrailCoordinateConverter) {
         let count = trail.count
         guard count > 0 else { return }
 
         let radius = configuration.cornerRadius
 
         if configuration.style == .solid {
-            drawSolidTrail(context: context, trail: trail, now: now, baseOpacity: baseOpacity, size: size, radius: radius, count: count)
+            drawSolidTrail(context: context, trail: trail, now: now, baseOpacity: baseOpacity, size: size, radius: radius, count: count, converter: converter)
             return
         }
 
@@ -35,8 +35,8 @@ final class GhostTrailRenderer {
 
             guard opacity > 0.01 else { continue }
 
-            let color = trailColor(at: i, total: count, now: now).opacity(opacity)
-            let rect = frame.frame
+            let color = trailColor(at: i, total: count, now: now)
+            let rect = converter.viewRect(fromQuartz: frame.frame)
 
             guard rect.intersects(CGRect(origin: .zero, size: size)) else { continue }
             guard rect.size.width > 0 && rect.size.height > 0 else { continue }
@@ -48,16 +48,20 @@ final class GhostTrailRenderer {
                 let path = Path(roundedRect: rect, cornerRadius: effectiveRadius)
                 context.stroke(
                     path,
-                    with: .color(color),
+                    with: .color(color.opacity(opacity)),
                     style: StrokeStyle(lineWidth: configuration.strokeWidth)
                 )
 
             case .filled:
                 let path = Path(roundedRect: rect, cornerRadius: effectiveRadius)
+                // `.filled` adds a translucent interior under the outline. It must be
+                // derived from `color` alone — applying the faded `color.opacity(opacity)`
+                // and then another `opacity * 0.3` squared the alpha and made faint,
+                // old frames vanish while fresh ones looked correct.
                 context.fill(path, with: .color(color.opacity(opacity * 0.3)))
                 context.stroke(
                     path,
-                    with: .color(color),
+                    with: .color(color.opacity(opacity)),
                     style: StrokeStyle(lineWidth: configuration.strokeWidth)
                 )
 
@@ -67,23 +71,27 @@ final class GhostTrailRenderer {
         }
 
         if let glow = configuration.glow {
-            drawGlow(context: context, trail: trail, now: now, baseOpacity: baseOpacity, glow: glow)
+            drawGlow(context: context, trail: trail, now: now, baseOpacity: baseOpacity, glow: glow, converter: converter)
         }
     }
 
-    private func drawSolidTrail(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, size: CGSize, radius: CGFloat, count: Int) {
+    private func drawSolidTrail(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, size: CGSize, radius: CGFloat, count: Int, converter: TrailCoordinateConverter) {
         let hue = trailColor(at: count - 1, total: count, now: now)
 
-        let layers: [(fraction: Double, opacity: Double)] = [
+        // Each layer stacks N nested window outlines, so its per-layer alpha must be
+        // scaled by `baseOpacity` — otherwise `GhostTrail.opacity` was ignored
+        // entirely by the `.solid` style.
+        let layers: [(fraction: Double, alpha: Double)] = [
             (1.0,  0.06),
             (0.65, 0.12),
             (0.35, 0.20),
             (0.15, 0.30),
         ]
 
-        for (fraction, layerOpacity) in layers {
+        for (fraction, layerAlpha) in layers {
             let maxIndex = min(count - 1, Int(Double(count) * fraction))
             guard maxIndex >= 0 else { continue }
+            let layerOpacity = baseOpacity * layerAlpha
 
             var path = Path()
             var added = false
@@ -92,7 +100,7 @@ final class GhostTrailRenderer {
                 let frame = trail[i]
                 let age = now - frame.timestamp
                 guard timeBasedOpacity(age: age, baseOpacity: baseOpacity) > 0.01 else { continue }
-                let rect = frame.frame
+                let rect = converter.viewRect(fromQuartz: frame.frame)
                 guard rect.intersects(CGRect(origin: .zero, size: size)) else { continue }
                 guard rect.size.width > 0, rect.size.height > 0 else { continue }
                 let effectiveRadius = min(radius, min(rect.width, rect.height) / 2)
@@ -111,7 +119,7 @@ final class GhostTrailRenderer {
                 let frame = trail[i]
                 let age = now - frame.timestamp
                 guard timeBasedOpacity(age: age, baseOpacity: baseOpacity) > 0.01 else { continue }
-                let rect = frame.frame
+                let rect = converter.viewRect(fromQuartz: frame.frame)
                 guard rect.size.width > 0, rect.size.height > 0 else { continue }
                 let effectiveRadius = min(radius, min(rect.width, rect.height) / 2)
                 allPath.addPath(Path(roundedRect: rect, cornerRadius: effectiveRadius))
@@ -126,7 +134,7 @@ final class GhostTrailRenderer {
         }
     }
 
-    private func drawGlow(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, glow: GlowConfig) {
+    private func drawGlow(context: GraphicsContext, trail: RingBuffer<TrailFrame>, now: CFTimeInterval, baseOpacity: Double, glow: GlowConfig, converter: TrailCoordinateConverter) {
         let count = trail.count
         guard count > 0 else { return }
         let radius = configuration.cornerRadius
@@ -142,14 +150,12 @@ final class GhostTrailRenderer {
             guard opacity > 0.01 else { continue }
 
             let glowColor = (glow.color ?? trailColor(at: i, total: count, now: now)).opacity(opacity)
+            let rect = converter.viewRect(fromQuartz: frame.frame)
 
-            let effectiveRadius = min(radius, min(frame.frame.width, frame.frame.height) / 2)
-            let path: Path
-            if effectiveRadius > 0 {
-                path = Path(roundedRect: frame.frame, cornerRadius: effectiveRadius)
-            } else {
-                path = Path(frame.frame)
-            }
+            let effectiveRadius = min(radius, min(rect.width, rect.height) / 2)
+            let path = effectiveRadius > 0
+                ? Path(roundedRect: rect, cornerRadius: effectiveRadius)
+                : Path(rect)
 
             blurred.stroke(
                 path,

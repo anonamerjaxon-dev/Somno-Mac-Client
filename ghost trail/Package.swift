@@ -23,6 +23,11 @@ let package = Package(
             name: "GhostTrailDemo",
             dependencies: ["GhostTrail"],
             path: "Examples/GhostTrailDemo"
+        ),
+        .testTarget(
+            name: "GhostTrailTests",
+            dependencies: ["GhostTrail"],
+            path: "Tests/GhostTrailTests"
         )
     ]
 )

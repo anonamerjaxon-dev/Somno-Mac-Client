@@ -11,6 +11,9 @@ public struct GhostTrailConfiguration: Sendable {
     public var frameCount: Int
     public var fadeDuration: TimeInterval
     public var movementThreshold: CGFloat
+    /// Position delta above which a window is treated as having jumped (teleported)
+    /// rather than been dragged, so its stale trail is discarded.
+    public var jumpThreshold: CGFloat
     public var opacity: Double
     public var style: TrailStyle
     public var glow: GlowConfig?
@@ -23,17 +26,19 @@ public struct GhostTrailConfiguration: Sendable {
         frameCount: Int = 20,
         fadeDuration: TimeInterval = 1.5,
         movementThreshold: CGFloat = 1,
+        jumpThreshold: CGFloat = 200,
         opacity: Double = 0.8,
         style: TrailStyle = .outline,
         glow: GlowConfig? = nil,
         cornerRadius: CGFloat = 8,
-        windowLevel: TrailWindowLevel = .aboveWindows
+        windowLevel: TrailWindowLevel = .behindWindows
     ) {
         self.strokeColor = strokeColor
         self.strokeWidth = max(strokeWidth, 0.5)
         self.frameCount = max(frameCount, 10)
         self.fadeDuration = max(fadeDuration, 0.1)
         self.movementThreshold = max(movementThreshold, 1)
+        self.jumpThreshold = max(jumpThreshold, 1)
         self.opacity = max(min(opacity, 1.0), 0.0)
         self.style = style
         self.glow = glow

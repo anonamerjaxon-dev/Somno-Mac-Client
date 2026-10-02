@@ -8,11 +8,20 @@ final class WindowTracker {
     private var lastMovedTime: [CGWindowID: CFTimeInterval] = [:]
     private let frameCount: Int
     private let fadeDuration: TimeInterval
+    private let movementThreshold: CGFloat
+    private let jumpThreshold: CGFloat
     private let ownPID: Int32
 
-    init(frameCount: Int, fadeDuration: TimeInterval) {
+    init(
+        frameCount: Int,
+        fadeDuration: TimeInterval,
+        movementThreshold: CGFloat = 1,
+        jumpThreshold: CGFloat = 200
+    ) {
         self.frameCount = frameCount
         self.fadeDuration = fadeDuration
+        self.movementThreshold = max(movementThreshold, 1)
+        self.jumpThreshold = max(jumpThreshold, 1)
         self.ownPID = ProcessInfo.processInfo.processIdentifier
     }
 
@@ -46,11 +55,11 @@ final class WindowTracker {
             if let lastFrame = lastKnownFrames[windowID] {
                 let dx = abs(currentFrame.origin.x - lastFrame.origin.x)
                 let dy = abs(currentFrame.origin.y - lastFrame.origin.y)
-                let jumped = dx > 200 || dy > 200
+                let jumped = dx > jumpThreshold || dy > jumpThreshold
 
                 if jumped {
                     windowTrails[windowID]?.clear()
-                } else if dx > 0 || dy > 0 {
+                } else if dx >= movementThreshold || dy >= movementThreshold {
                     appendFrame(windowID,
                                 frame: lastFrame,
                                 now: now)
@@ -101,7 +110,7 @@ final class WindowTracker {
         if let last = trail.last {
             let dx = abs(frame.origin.x - last.frame.origin.x)
             let dy = abs(frame.origin.y - last.frame.origin.y)
-            guard dx > 0 || dy > 0 else { return }
+            guard dx >= movementThreshold || dy >= movementThreshold else { return }
         }
 
         trail.append(TrailFrame(frame: frame, timestamp: now))

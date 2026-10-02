@@ -61,6 +61,25 @@ private func stopDisplayLink() {
 }
 ```
 
+> **Superseded 2026-10-02 by the audit fix round.** This snippet is the *original*
+> specification and is kept for provenance, but two of its statements are known-bad and
+> are NOT what `Sources/GhostTrail/GhostTrail.swift` does:
+>
+> 1. **`passRetained` + `release()` in teardown leaks.** The retain is only balanced by
+>    `stopDisplayLink()`, which cannot run from `deinit` while the object is retained by
+>    its own display link — so a dropped reference left a live display link and a visible
+>    overlay forever. The implementation uses `Unmanaged.passUnretained(self)` and
+>    serializes teardown against in-flight callbacks with an `NSLock`.
+> 2. **`CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)` writes straight into the
+>    property, so a failed create leaves `displayLink` nil — and the old `stop()` did
+>    `displayLink as! CVDisplayLink`, which trapped on macOS 13/14 exactly in that case.**
+>    The implementation checks the `CVReturn` status, stores the link in a typed
+>    `CVDisplayLink?` property, and tears down + returns `false` from `start()` when no
+>    link can be created.
+>
+> On macOS 13/14 this path is the only one taken, so the force-cast crashed every
+> affected user on first `start()`.
+
 ### 2. Overlay window (from CursorTrail TrailWindow)
 
 Borderless, transparent, mouse-ignoring, full-screen overlay at a level **below normal windows** so

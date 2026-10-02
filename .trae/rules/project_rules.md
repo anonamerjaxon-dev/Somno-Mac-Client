@@ -1,4 +1,8 @@
-# DesktoCanvas — Agent Guidelines & Lessons Learned
+# Somno Mac Client — Agent Guidelines & Lessons Learned
+
+> Project-wide rules of record live in `AGENTS.md` at the repo root (module
+> identities, conventions, audit history). This file holds working conventions;
+> where the two disagree, `AGENTS.md` wins.
 
 ## 0. Terminal commands
 
@@ -113,11 +117,12 @@ Things you CAN decide without asking:
 
 ## 7. Build verification
 
-After ANY code change, run:
+After ANY code change, run (from the repo root — never hardcode absolute paths):
 ```bash
-cd "/Users/jackson/Desktop/work related/claude/something client mac/desktop-canvas"
-swift build
+cd desktop-canvas && swift build
 ```
+(When working in another module, substitute that module's folder, e.g.
+`cd "cursor trail" && swift build`.)
 
 Must pass with zero errors, zero warnings. If it doesn't, fix before proceeding.
 Never hand code to the user that doesn't build.
@@ -134,21 +139,32 @@ Never hand code to the user that doesn't build.
 
 ## 9. Scope awareness
 
-The current project structure:
+The current project structure (repo root is `somno mac client/`):
 ```
-something client mac/
-├── cursor trail/          ← separate module, do not touch unless asked
-├── desktop-canvas/        ← current focus
+somno mac client/
+├── AGENTS.md              ← canonical project rules (read first)
+├── README.md
+├── LICENSE
+├── cursor trail/          ← SwiftPM library — mouse-cursor trail overlay
+├── cursor changer/        ← SwiftPM library — personal cursor replacement
+│                             (renamed from polymorph/; always call it
+│                             "cursor changer")
+├── desktop-canvas/        ← SwiftPM package — desktop wallpaper / procedural art
 │   ├── Package.swift
-│   ├── Sources/DesktopCanvas/   ← production code
-│   ├── Sources/DesktopCanvasTest/ ← temporary test target
-│   ├── Spike/                   ← research spikes (REFERENCE, do not modify)
-│   └── docs/superpowers/        ← specs and plans
-├── somno/                 ← main app
-└── user/                  ← user onboarding
+│   ├── Sources/DesktopCanvas/    ← production library code
+│   ├── Sources/DesktopCanvasTest/ ← test/demo executable target
+│   ├── Spike/                    ← research spikes (REFERENCE, do not modify)
+│   └── docs/superpowers/         ← specs and plans
+├── ghost trail/           ← SwiftPM library — trails behind dragged windows
+├── totem pop/             ← IMU sensor viewer app under test/ (+ docs/specs)
+├── black hole/            ← REFERENCE MATERIAL ONLY — not a module to
+│                             recreate, extend, or fix (see AGENTS.md)
+├── .trae/, .vscode/       ← editor config (root-level, tracked selectively)
 ```
 
-Stay in `desktop-canvas/` unless told otherwise.
+Work inside the module you were asked to work on unless told otherwise; root-level
+files (`AGENTS.md`, `README.md`, `.gitignore`, `.vscode/`, `.trae/`) are shared —
+coordinate before editing them.
 
 ---
 

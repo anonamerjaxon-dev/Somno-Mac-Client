@@ -27,7 +27,29 @@ Package.resolved
 
 # Tool artifacts
 .superpowers/
+.firecrawl/
 
 # IDE
 .idea/
-.vscode/
+# NOTE: '.vscode/*' (not '.vscode/') — git cannot re-include a file whose
+# parent *directory* is excluded, so the directory itself must stay matched
+# by '*' and launch.json explicitly negated. launch.json is tracked on purpose.
+.vscode/*
+!.vscode/launch.json
+
+# .trae/ holds shared agent guidelines (rules/project_rules.md), which is
+# tracked on purpose — ignore only local/cache/log state, never the directory.
+.trae/*local*
+.trae/**/cache/
+.trae/**/logs/
+
+# Media (experiment recordings / captures — do not commit)
+*.mp4
+*.webm
+*.mov
+*.gif
+*.avi
+*.mkv
+
+# Scratch logs
+build-output.txt

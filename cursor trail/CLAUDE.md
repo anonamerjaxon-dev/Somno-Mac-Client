@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 swift build
 swift test
+swift test --disable-xctest   # clean output without the XCTest bridge line
 swift run TestRunner
 swift run CursorTrailDemo
 ```
@@ -37,12 +38,33 @@ swift run CursorTrailDemo
 
 ### Demo & Testing
 - **`Examples/CursorTrailDemo/main.swift`** — SwiftUI app with live controls for all parameters.
-- **`Tests/CursorTrailTests/`** — Self-hosted test harness (custom `XCTAssert*`, not XCTest). Tests `RingBuffer` (empty, append, overwrite, clear) and `TrailConfiguration` (defaults, custom values).
-- **`Tests/TestRunner/main.swift`** — Verifies the module loads.
+- **`Tests/CursorTrailTests/`** — **swift-testing** (`import Testing`, `@Test`/`@Suite`/`#expect`),
+  NOT XCTest and not a custom harness. `swift test` runs these directly: the real executed count is
+  the swift-testing `Test run with N tests` line. The `Executed 0 tests` line above it comes from the
+  always-present XCTest bridge finding no XCTest cases, and is expected — ignore it.
+  Run `swift test --disable-xctest` for a clean, XCTest-free line.
+  Suites: `CursorTrail lifecycle` (real `CursorTrail`, `@MainActor`), `Multi-display coordinate flip`
+  (pure math), `Idle fade math` (pure math), `RingBuffer`, `TrailConfiguration`,
+  `TrailRenderer geometry guards`.
+- **`Tests/TestRunner/main.swift`** — separate module-load smoke check (`swift run TestRunner`).
+  It does not run the `CursorTrailTests` suite.
 
 ## Important Notes
-- Tests use a custom assertion harness, not XCTest. Do not add XCTest-based tests.
-- `TrailRenderer` flips Y-coordinates for macOS screen space (`NSScreen.main?.frame.height`).
+- **Tests use swift-testing, not XCTest.** Do not add XCTest-based tests.
+- **Lifecycle tests touching `start()`/`stop()` must be `@MainActor`.** Those methods carry
+  `dispatchPrecondition(condition: .onQueue(.main))`; non-main swift-testing tests run on the
+  swift concurrency pool and would trip the precondition. AppKit windows and `NSEvent.mouseLocation`
+  do work inside a `swift test` process, so real windows can be created.
+- `start()`/`stop()` are main-thread-only; a new instance's `start()` stops the previous trail
+  (single active trail); `stop()` clears `CursorTrail.current` only when `current === self`;
+  `current` is `weak`, so dropping your last reference stops the trail instead of leaking a zombie overlay.
+- Coordinates are converted per-screen by `CursorTrail.localPoint(fromGlobal:screenFrame:)`:
+  `x -= screenFrame.origin.x`, `y = screenFrame.maxY - y`, using the **overlay window's** screen.
+  Do not reintroduce `NSScreen.main!.frame.height`-only math — it misplaces the trail on secondary displays.
+- The display-link callback carries an **unretained** `DisplayLinkContext` that holds the trail
+  **weakly** and serialises `withTrail` against `markReleased()`. Never make the trail strongly
+  self-retaining (`Unmanaged.passRetained(self)` was the original zombie-overlay bug), and never
+  release the context without first calling `markReleased()`.
 - Mouse movement detection uses 0.5px squared-distance threshold to avoid jitter.
 - Rainbow mode uses HSL hue rotation in `TrailRenderer.colorForTrail()`.
 - Particles were removed in v0.2.0 due to instability. Do not reintroduce without thorough testing.

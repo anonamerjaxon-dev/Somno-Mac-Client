@@ -3,7 +3,10 @@ import SwiftUI
 final class TrailWindow: NSWindow {
     let model: TrailModel
 
-    init(configuration: TrailConfiguration = .init()) {
+    /// - Parameter screen: the display the overlay should cover. Defaults to the main
+    ///   screen. Pass the screen under the cursor so a trail follows the user onto a
+    ///   secondary display instead of being pinned to the main one.
+    init(configuration: TrailConfiguration = .init(), screen: NSScreen? = nil) {
         self.model = TrailModel()
         let contentView = TrailContentView(configuration: configuration, model: model)
         let hostingController = NSHostingController(rootView: contentView)
@@ -23,7 +26,7 @@ final class TrailWindow: NSWindow {
         self.level = .screenSaver
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        if let screen = NSScreen.main {
+        if let screen = screen ?? NSScreen.main {
             self.setFrame(screen.frame, display: true)
         }
     }

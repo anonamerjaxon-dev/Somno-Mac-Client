@@ -3,14 +3,20 @@ import AppKit
 
 public final class TrailRenderer {
     private let configuration: TrailConfiguration
-    private static let yOffset: CGFloat = 16
+
+    /// Points are drawn this far below the reported cursor position to sit the trail
+    /// under the cursor arrow. Internal for tests.
+    static let yOffset: CGFloat = 16
+
+    /// Samples generated per spline segment when resampling. Internal for tests.
+    static let samplesPerSegment: Int = 8
 
     public init(configuration: TrailConfiguration) {
         self.configuration = configuration
     }
 
     public func draw(context: GraphicsContext, points: RingBuffer<TrailPoint>) {
-        guard points.count >= 2 else { return }
+        guard Self.isDrawable(pointCount: points.count) else { return }
 
         let now = CACurrentMediaTime()
         let opacity = configuration.opacity
@@ -52,7 +58,7 @@ public final class TrailRenderer {
     // MARK: - Ribbon
 
     private func drawRibbon(context: GraphicsContext, points: RingBuffer<TrailPoint>, now: CFTimeInterval, opacity: Double) {
-        guard points.count >= 3 else {
+        guard !Self.usesRibbonFallback(pointCount: points.count) else {
             drawLine(context: context, points: points, now: now, opacity: opacity)
             return
         }
@@ -117,6 +123,25 @@ public final class TrailRenderer {
 
     // MARK: - Geometry
 
+    /// Below this many points there is no segment to stroke. Pure, so the guard can be
+    /// tested without a `GraphicsContext`.
+    static func isDrawable(pointCount: Int) -> Bool {
+        pointCount >= 2
+    }
+
+    /// A ribbon needs at least three points to build a filled shape; with fewer it
+    /// degrades to the stroked line path.
+    static func usesRibbonFallback(pointCount: Int) -> Bool {
+        pointCount < 3
+    }
+
+    /// Number of samples produced when resampling `pointCount` points through the
+    /// Catmull-Rom spline. Guards against a zero/negative count producing garbage.
+    static func resampleSampleCount(pointCount: Int) -> Int {
+        guard pointCount > 0 else { return 0 }
+        return (pointCount - 1) * samplesPerSegment + 1
+    }
+
     private func polylinePath(from points: RingBuffer<TrailPoint>) -> Path {
         var path = Path()
         guard let first = points.first else { return path }
@@ -130,8 +155,9 @@ public final class TrailRenderer {
 
     private func resampleCurve(points: RingBuffer<TrailPoint>) -> [CGPoint] {
         let count = points.count
-        let samplesPerSegment = 8
-        let totalSamples = (count - 1) * samplesPerSegment + 1
+        let samplesPerSegment = Self.samplesPerSegment
+        let totalSamples = Self.resampleSampleCount(pointCount: count)
+        guard totalSamples > 0 else { return [] }
         var result = [CGPoint]()
         result.reserveCapacity(totalSamples)
 

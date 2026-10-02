@@ -166,13 +166,21 @@ swift run CursorTrailDemo
 
 ## Important Notes
 
-- **Don't call `.start()` multiple times** without stopping first — each call creates a new overlay window.
+- `start()` and `stop()` must be called on the **main thread** — they assert it, since they
+  create and tear down `NSWindow` and `CVDisplayLink` objects.
+- Calling `.start()` on a new instance automatically stops any previously running trail —
+  there is only ever one active trail. Calling `.start()` twice on the *same* instance is a
+  no-op that returns `false`.
+- The overlay is anchored to the display under the cursor when `start()` runs (main display
+  otherwise). It does not follow the cursor to another display while running; move the cursor
+  across screens and restart the trail to re-anchor it.
 - **Don't reuse the builder** after `.start()`. The builder pattern snapshots configuration at start time.
 - **Don't set `opacity` to 0** — the trail won't be visible. Opacity is 0.0–1.0, not a percentage.
-- **Don't expect multi-monitor support** — the trail covers only the main display.
 - **Don't expect it to work in full-screen games** — apps using `CGDisplayCapture` block overlay drawing.
 - **Don't mix `.solid` color with `.rainbowSpeed`** — rainbow speed only affects `.rainbow` color mode.
-- **Always call `.stop()`** if you hold a strong reference, though `deinit` handles cleanup.
+- Always call `.stop()` if you hold a strong reference. If you drop your last reference while
+  running, the trail stops itself (`CursorTrail.current` is a weak reference, so it does not
+  keep the trail alive).
 
 ## License
 

@@ -44,8 +44,19 @@ sudo ./build/MotionSensor
 
 ## Key Details
 
-- Updates at ~20 Hz via HID input reports
+- Updates at ~25 Hz (reports arrive at 1 kHz; the UI coalesces to the latest sample every 40 ms)
+- **Units**: each 22-byte report carries three signed little-endian int32 **raw counts** at bytes
+  6/10/14. The app divides by `accelScale = 65536` to get g-force, which is what the UI shows.
+  The report rate property is `reportIntervalMicroseconds = 1000` (1 kHz, matching the taigrr driver).
 - Values at rest: X~0.0g, Y~0.0g, Z~-1.0g (gravity), Magnitude~1.0g
 - The sensor thread uses `CFRunLoopRunInMode` to deliver async HID callbacks
-- Report buffer (4096 bytes) must outlive the callback — stored as `reportBuffer` property
-- UI updates are dispatched to the main queue via `DispatchQueue.main.async`
+- The report buffer (`reportBufSize`, 24 bytes) must outlive the callback — allocated on the sensor
+  thread, freed only on that same thread after `IOHIDDeviceUnscheduleFromRunLoop` + `IOHIDDeviceClose`
+- All cross-thread state (`deviceRef`, `reportBuffer`, `sensorThread`, the callback context and the
+  coalesced sample) is guarded by a single `NSLock`
+- UI updates are dispatched to the main queue via `DispatchQueue.main.async`, at most once per
+  `publishIntervalSeconds`; the dispatched block re-reads the latest sample under the lock
+- `./build.sh` compiles both binaries and runs `./build/MotionSensorSelfTest`, which covers the
+  report parser and the bar geometry with no hardware. Building needs no sudo; only running the app does.
+- The byte offsets are corroborated by three open-source implementations; the /65536 divisor is an
+  assumption **needing hardware verification** (see `test/HOW_TO_USE.txt`)

@@ -84,7 +84,7 @@ struct AxisRow: View {
     let value: Double
     let color: Color
 
-    private let maxG: Double = 2.0  // display range: -2g to +2g
+    private let geometry = AxisBarGeometry()
 
     var body: some View {
         HStack(spacing: 12) {
@@ -108,25 +108,13 @@ struct AxisRow: View {
                     .fill(Color.gray.opacity(0.4))
                     .frame(width: 1, height: 16)
 
-                // Value bar
+                // Value bar — anchored at the centre marker.
                 RoundedRectangle(cornerRadius: 4)
                     .fill(color.opacity(0.7))
-                    .frame(width: barWidth, height: 12)
-                    .offset(x: barOffset)
+                    .frame(width: geometry.width(for: value), height: 12)
+                    .offset(x: geometry.offset(for: value))
             }
             .frame(height: 12)
         }
-    }
-
-    private var clampedValue: Double {
-        min(max(value, -maxG), maxG)
-    }
-
-    private var barWidth: CGFloat {
-        max(2, abs(CGFloat(clampedValue) / maxG) * 150)
-    }
-
-    private var barOffset: CGFloat {
-        CGFloat(clampedValue / maxG) * 150
     }
 }

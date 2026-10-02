@@ -1,7 +1,19 @@
 # TotemPop — Design Document
 
 **Date:** 2026-06-30
-**Status:** Approved
+**Status:** Approved as a design — **NOT IMPLEMENTED. No `TotemPop` package exists.**
+
+This document is a design proposal only. Nothing described below has been built:
+there is no `Package.swift`, no `Sources/TotemPop/`, and no overlay code anywhere in
+this repository. Treat every section as aspirational, not as a description of
+current behaviour.
+
+What *does* exist is unrelated groundwork: a standalone sensor-viewer app under
+`test/` (`MotionSensorManager.swift` + `ContentView.swift`) that reads the same
+BMI286 accelerometer over IOHID and plots X/Y/Z on screen. It is a debug viewer,
+not the totem module — it has no overlay, no key-combination trigger, and no
+animation. It can serve as the sensor-reading reference for a future
+implementation, but it implements none of this spec's behaviour.
 
 ## What it is
 

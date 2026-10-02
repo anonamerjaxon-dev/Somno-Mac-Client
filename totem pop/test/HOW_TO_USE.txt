@@ -6,7 +6,7 @@ WHAT IT DOES
 ------------
 Reads the Bosch BMI286 IMU (accelerometer) chip that's built into
 Apple Silicon Macs. Shows live X, Y, Z acceleration values and the
-total magnitude, updating ~20 times per second.
+total magnitude, updating ~25 times per second.
 
 HARDWARE REQUIREMENTS
 ---------------------
@@ -15,16 +15,17 @@ HARDWARE REQUIREMENTS
 
 HOW TO RUN
 ----------
-Open Terminal and run:
+Open Terminal and cd into this folder from the project root:
 
-    sudo /Users/jackson/Desktop/test/build/MotionSensor
+    cd "totem pop/test"
+    sudo ./build/MotionSensor
 
 You MUST use sudo — the app needs root access to talk to the
-accelerometer chip.
+accelerometer chip. (Only the RUN needs sudo. Building does not.)
 
 If you want to rebuild from source first:
 
-    cd /Users/jackson/Desktop/test
+    cd "totem pop/test"
     ./build.sh
     sudo ./build/MotionSensor
 
@@ -35,6 +36,10 @@ WHAT YOU'LL SEE
 - X/Y/Z values in g-force units
 - Magnitude (‖a‖) = total acceleration
 - Tilt your Mac and the values change
+
+The bar next to each axis is anchored at the centre marker (zero) and
+grows outward toward ±2 g. Full scale is ±2 g; readings beyond that are
+clamped to the end of the bar.
 
 HOW THE SENSOR WORKS
 --------------------
@@ -50,6 +55,35 @@ Your Mac has a tiny motion chip (Bosch BMI286) connected over HID
 This is the SAME technique used by the "spank" app on GitHub
 (github.com/taigrr/spank) — just without the sound effects.
 
+UNITS: HOW A RAW REPORT BECOMES "g"
+-----------------------------------
+Each 22-byte HID report has a 6-byte header, then three signed
+little-endian 32-bit values starting at bytes 6, 10 and 14. Those are
+RAW COUNTS, not g. The conversion is:
+
+    g = raw_count / 65536
+
+So a resting Z reading is about -65536 raw counts, which becomes
+-1.0 g. Everything this app displays has already been divided by
+65536, so the numbers on screen really are g-force.
+
+>>> NEEDS HARDWARE VERIFICATION <<<
+The /65536 scale and the byte offsets (6/10/14) are not documented by
+Apple — they were taken from three independent open-source
+implementations of this same undocumented protocol (junwatu/macimu,
+taigrr/apple-silicon-accelerometer, and the Sesame Disk write-up).
+The offsets are well corroborated. The 65536 divisor is the one
+assumption that has NOT been checked against a physical Mac in this
+project, because no test hardware was available.
+
+How to verify it yourself in 30 seconds:
+  1. Run the app and leave the Mac flat on a desk.
+  2. The magnitude should read ≈ 1.0 g. Gravity is ~1 g, so if the
+     divisor is right the magnitude is ≈ 1.0 no matter how the Mac is
+     oriented.
+  3. If the magnitude reads in the tens of thousands instead, the
+     divisor is missing — report that.
+
 TROUBLESHOOTING
 ---------------
 "No accelerometer found" with red dot?
@@ -61,12 +95,27 @@ App crashes or won't start?
 Values stay at zero?
   → The sensor driver may need a moment to wake up
 
+Building or running the self-tests
+  ./build.sh builds BOTH binaries and runs the hardware-free self-tests.
+  It exits nonzero if any test fails, so a broken build never looks green.
+  You can run the tests alone, no sudo needed:
+      ./build/MotionSensorSelfTest
+
+  The self-tests cover the HID report parser (byte offsets, end-to-end
+  scaling, short-buffer rejection) and the value-bar geometry
+  (anchoring at the marker, full-scale reach, clamping). They do NOT
+  cover anything that needs the physical sensor.
+
 VALUES SEEM WRONG?
 ------------------
-Raw sensor output. At rest your Mac should show roughly:
+At rest your Mac should show roughly:
   X ≈ 0.0 g
   Y ≈ 0.0 g
   Z ≈ -1.0 g    (gravity pulling down)
   Magnitude ≈ 1.0 g
+
+The single best sanity check is the MAGNITUDE: it should sit near
+1.0 g at rest no matter which way the Mac is facing, and exceed 1.0 g
+only when you shake or jerk it.
 
 Pick up or tilt the Mac and the values will change.

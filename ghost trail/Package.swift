@@ -24,6 +24,11 @@ let package = Package(
             dependencies: ["GhostTrail"],
             path: "Examples/GhostTrailDemo"
         ),
+        .executableTarget(
+            name: "GhostTrailProbe",
+            dependencies: ["GhostTrail"],
+            path: "Examples/GhostTrailProbe"
+        ),
         .testTarget(
             name: "GhostTrailTests",
             dependencies: ["GhostTrail"],

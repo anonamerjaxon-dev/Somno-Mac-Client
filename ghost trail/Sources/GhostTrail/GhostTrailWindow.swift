@@ -4,6 +4,13 @@ import SwiftUI
 final class GhostTrailWindow: NSWindow {
     private let model: GhostTrailModel
 
+    /// Quartz → view conversion this overlay draws with.
+    ///
+    /// `GhostTrail` needs it too: the rectangles it punches out of the ribbon
+    /// have to be built in the same space as the ribbon itself, or the holes
+    /// land mirrored and nothing lines up.
+    let converter: TrailCoordinateConverter
+
     init(configuration: GhostTrailConfiguration) {
         let model = GhostTrailModel()
         let renderer = GhostTrailRenderer(configuration: configuration)
@@ -32,6 +39,7 @@ final class GhostTrailWindow: NSWindow {
         let hostingController = NSHostingController(rootView: contentView)
 
         self.model = model
+        self.converter = converter
 
         super.init(
             contentRect: frame,
@@ -51,7 +59,21 @@ final class GhostTrailWindow: NSWindow {
         case .aboveWindows:
             self.level = .floating
         case .behindWindows:
-            self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
+            // macOS composites NOTHING below `kCGNormalWindowLevel` — measured,
+            // not assumed: a 400×200pt window at `kCGDesktopIconWindowLevel`,
+            // at `normal - 1`, and at every level in between produced 475 pixels
+            // in a screenshot, identical to an off-screen baseline, while the
+            // same window at `kCGNormalWindowLevel` produced 320,475. Setting
+            // the level below zero therefore produced a window that existed,
+            // reported its layer to `CGWindowListCopyWindowInfo`, and was never
+            // drawn. Every trail since the rewrite has been invisible.
+            //
+            // So the overlay goes one point ABOVE normal windows and the depth
+            // illusion is produced by erasing the ribbon where a real window
+            // covers it — see `WindowOccluders`. Just above normal (rather than
+            // `.floating`) keeps the trail under panels, menus and the status
+            // items, so those never smear across the effect.
+            self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.normalWindow)) + 1)
         }
 
         if !hasScreens {
@@ -80,13 +102,23 @@ final class GhostTrailWindow: NSWindow {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(trails: [CGWindowID: RingBuffer<TrailFrame>]) {
+    func update(trails: [CGWindowID: RingBuffer<TrailSample>]) {
         model.trails = trails
+    }
+
+    /// Publishes the on-screen window frames the renderer must cut the ribbon
+    /// around. Kept separate from `update` so the occluder set is republished
+    /// even on ticks where no window moved.
+    func updateOccluders(_ rects: [CGRect]) {
+        model.occluders = rects
     }
 }
 
 final class GhostTrailModel: ObservableObject {
-    @Published var trails: [CGWindowID: RingBuffer<TrailFrame>] = [:]
+    @Published var trails: [CGWindowID: RingBuffer<TrailSample>] = [:]
+    /// Visible frames, in overlay-view coordinates, that the trail must appear
+    /// to pass beneath.
+    @Published var occluders: [CGRect] = []
 }
 
 struct GhostTrailContentView: View {
@@ -98,6 +130,7 @@ struct GhostTrailContentView: View {
         Canvas { context, size in
             renderer.draw(context: context,
                           trails: model.trails,
+                          occluders: model.occluders,
                           size: size,
                           converter: converter)
         }

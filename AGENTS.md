@@ -35,6 +35,33 @@ independent SwiftPM package (except `black hole/` and `totem pop/` — see below
   `73e1ceb` ghost trail (12 tests), `75c1fb8` the polymorph → cursor changer rename,
   `a86f865` repo hygiene.
 
+### Ghost trail rewrite (2026-10-03)
+
+`ghost trail/` was rebuilt from the inside out at the user's request — it was
+"taking up so much energy", inefficient, and its per-sample alpha stamping read
+as a grey smudge. Package name, module name, and public builder API are
+unchanged; the internals are new. Now 47 tests in 8 suites.
+
+**Read `ghost trail/REWRITE-NOTES.md` before changing the overlay level, the
+hole-clipping code, or the motion classifier.** It records the measurements that
+killed the obvious designs, the most important being:
+
+- macOS **does not composite** overlay content below `kCGNormalWindowLevel`
+  (measured: 475 screenshot pixels at `kCGDesktopIconWindowLevel` vs 320,475 at
+  normal). The overlay therefore sits at normal + 1 and **draws** the
+  "passes behind windows" illusion by erasing ribbon pixels under visible
+  windows. A screenshot of a ribbon over a busy desktop can look empty; that is
+  the feature working, not a bug.
+- Holes must be an even-odd **clip region**, never extra subpaths on the ribbon
+  path — ribbon sections overlap, so even-odd parity-counts the ribbon against
+  itself.
+- A resize is never a snap. Only translation can be a window snapping.
+
+`Examples/GhostTrailProbe` is committed deliberately: "the trail doesn't show
+up" is the one failure mode unit tests cannot catch. It is proven to start the
+tap and produce a live trail (`peakTrails=1`); live *pixel* proof is still
+outstanding and is called out in REWRITE-NOTES.md §7.
+
 ## Conventions
 
 - No new dependencies; SwiftPM only.

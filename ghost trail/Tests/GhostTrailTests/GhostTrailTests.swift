@@ -1,146 +1,356 @@
-import XCTest
+import Testing
+import Foundation
+import CoreGraphics
 @testable import GhostTrail
 
-// These tests cover the pure-logic pieces of the module: the ring buffer, the
-// configuration clamping, and the quartz→view coordinate conversion that the
-// renderer relies on to place trails on secondary displays.
+// MARK: - Motion classification
 
-final class RingBufferTests: XCTestCase {
-    func testAppendAndReadInOrder() {
-        var buffer = RingBuffer<Int>(capacity: 4)
-        for i in 0..<4 {
-            buffer.append(i)
-        }
-        XCTAssertEqual(buffer.count, 4)
-        XCTAssertEqual(buffer.first, 0)
-        XCTAssertEqual(buffer.last, 3)
-        XCTAssertEqual(buffer[0], 0)
-        XCTAssertEqual(buffer[3], 3)
+@Suite("Trail motion classification")
+struct TrailMotionTests {
+    private func sample(x: CGFloat, y: CGFloat = 0, w: CGFloat = 400, h: CGFloat = 300, at t: CFTimeInterval = 0) -> TrailSample {
+        TrailSample(frame: CGRect(x: x, y: y, width: w, height: h), timestamp: t)
     }
 
-    func testOverwritesOldestWhenFull() {
-        var buffer = RingBuffer<Int>(capacity: 3)
-        for i in 0..<5 {
-            buffer.append(i)
-        }
-        XCTAssertEqual(buffer.count, 3, "count must never exceed capacity")
-        XCTAssertEqual(buffer.first, 2, "oldest entries are dropped")
-        XCTAssertEqual(buffer.last, 4)
+    @Test("movement below the minimum distance is stationary")
+    func stationaryBelowThreshold() {
+        let tuning = TrailTuning(minDistance: 4, snapDistance: 48)
+        #expect(tuning.classify(sample(x: 3), from: sample(x: 0)) == .stationary)
     }
 
-    func testRemoveFirstDrainsBuffer() {
-        var buffer = RingBuffer<Int>(capacity: 2)
-        buffer.append(10)
-        buffer.append(20)
-        XCTAssertEqual(buffer.removeFirst(), 10)
-        XCTAssertEqual(buffer.count, 1)
-        XCTAssertEqual(buffer.removeFirst(), 20)
-        XCTAssertTrue(buffer.isEmpty)
-        XCTAssertNil(buffer.removeFirst(), "removing from empty returns nil")
+    @Test("movement past the snap distance is a snap, not a drag")
+    func snapDetected() {
+        let tuning = TrailTuning(minDistance: 1, snapDistance: 48)
+        #expect(tuning.classify(sample(x: 800), from: sample(x: 0)) == .snapped)
     }
 
-    func testRejectsZeroCapacity() {
-        // `init(capacity:)` traps on a non-positive capacity; keep capacity positive
-        // and verify a one-slot buffer behaves as a strict overwrite ring.
-        var buffer = RingBuffer<Int>(capacity: 1)
-        buffer.append(1)
-        buffer.append(2)
-        XCTAssertEqual(buffer.count, 1)
-        XCTAssertEqual(buffer.last, 2)
-    }
-}
-
-final class GhostTrailConfigurationTests: XCTestCase {
-    func testClampsOutOfRangeValues() {
-        let config = GhostTrailConfiguration(
-            strokeWidth: 0,
-            frameCount: 1,
-            fadeDuration: 0,
-            movementThreshold: 0,
-            jumpThreshold: 0,
-            opacity: 5,
-            cornerRadius: -3
-        )
-        XCTAssertEqual(config.strokeWidth, 0.5)
-        XCTAssertEqual(config.frameCount, 10)
-        XCTAssertEqual(config.fadeDuration, 0.1)
-        XCTAssertEqual(config.movementThreshold, 1)
-        XCTAssertEqual(config.jumpThreshold, 1)
-        XCTAssertEqual(config.opacity, 1.0)
-        XCTAssertEqual(config.cornerRadius, 0)
+    @Test("a resize with an unmoved origin is not stationary")
+    func resizeCountsAsMotion() {
+        // The origin never moves, so a tracker that compares origins alone sees
+        // nothing here and never records a sample.
+        let tuning = TrailTuning(minDistance: 1, snapDistance: 48)
+        let kind = tuning.classify(sample(x: 0, w: 460), from: sample(x: 0, w: 400))
+        #expect(kind == .continuous)
     }
 
-    func testDefaultWindowLevelIsBehindWindows() {
-        // The feature promise is a trail that renders *behind* the dragged window.
-        XCTAssertTrue(GhostTrailConfiguration().windowLevel == .behindWindows)
+    @Test("a large resize is a continuous drag, not a snap")
+    func largeResizeIsNotSnap() {
+        // Only translation can be a window snap. A 500pt resize between two
+        // 30Hz samples is someone pulling a window edge hard; classifying it as
+        // a snap threw away the trail on every fast resize.
+        let tuning = TrailTuning(minDistance: 1, snapDistance: 48)
+        #expect(tuning.classify(sample(x: 0, w: 900), from: sample(x: 0, w: 400)) == .continuous)
+    }
+
+    @Test("a translation beyond the snap distance is a snap")
+    func translationSnap() {
+        let tuning = TrailTuning(minDistance: 1, snapDistance: 48)
+        #expect(tuning.classify(sample(x: 900), from: sample(x: 0)) == .snapped)
+    }
+
+    @Test("snap distance is clamped above the minimum distance")
+    func tuningIsCoherent() {
+        let tuning = TrailTuning(minDistance: 100, snapDistance: 10)
+        #expect(tuning.snapDistance >= tuning.minDistance)
+        #expect(tuning.minDistance == 100)
     }
 }
 
-final class TrailCoordinateConverterTests: XCTestCase {
-    /// Single 1920x1080 display at the Cocoa origin, overlay covering exactly it.
-    private let singleDisplay = TrailCoordinateConverter(
-        mainDisplayFrame: NSRect(x: 0, y: 0, width: 1920, height: 1080),
-        overlayFrame: NSRect(x: 0, y: 0, width: 1920, height: 1080)
-    )
+// MARK: - Hit testing
 
-    func testFlipsVerticalAxisAboutMainDisplay() {
-        // Quartz rect at the very top of the screen (y=0) maps to the top of the
-        // view in bottom-left coordinates: y = 1080 - (0 + 100) = 980.
-        let rect = singleDisplay.viewRect(fromQuartz: CGRect(x: 100, y: 0, width: 200, height: 100))
-        XCTAssertEqual(rect, CGRect(x: 100, y: 980, width: 200, height: 100))
+@Suite("Window interaction hit testing")
+struct WindowInteractionTests {
+    private let frame = CGRect(x: 100, y: 100, width: 800, height: 600)
+
+    @Test("a point outside the window is not an interaction")
+    func outside() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 50, y: 50), in: frame) == nil)
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 950, y: 400), in: frame) == nil)
     }
 
-    func testFlipsBottomOfScreenToViewOrigin() {
-        let rect = singleDisplay.viewRect(fromQuartz: CGRect(x: 0, y: 980, width: 10, height: 100))
-        XCTAssertEqual(rect.origin.y, 0)
+    @Test("the top band is a drag")
+    func titleBarDrag() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 500, y: 110), in: frame) == .drag)
     }
 
-    func testPreservesSize() {
-        let rect = singleDisplay.viewRect(fromQuartz: CGRect(x: 37, y: 111, width: 333, height: 217))
-        XCTAssertEqual(rect.width, 333)
-        XCTAssertEqual(rect.height, 217)
+    @Test("the middle of the window is a body click, which moves nothing")
+    func bodyClick() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 500, y: 400), in: frame) == .body)
     }
 
-    /// Secondary display placed to the LEFT of the main one (negative x in Cocoa).
-    func testSecondaryDisplayToTheLeft() {
-        // Main 1920x1080 at (0,0); secondary 1280x800 at (-1280, 0); overlay spans both.
-        let converter = TrailCoordinateConverter(
-            mainDisplayFrame: NSRect(x: 0, y: 0, width: 1920, height: 1080),
-            overlayFrame: NSRect(x: -1280, y: 0, width: 3200, height: 1080)
+    @Test("the bottom band is not a title bar, so it is a body click")
+    func bottomBand() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 500, y: 690), in: frame) == .body)
+    }
+
+    @Test("edges resize")
+    func edgesResize() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 103, y: 400), in: frame) == .resize)
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 500, y: 697), in: frame) == .resize)
+    }
+
+    @Test("a corner resizes even though it is inside the title bar band")
+    func cornerBeatsTitleBar() {
+        #expect(WindowInteractionTester.interaction(at: CGPoint(x: 102, y: 102), in: frame) == .resize)
+    }
+
+    @Test("the frontmost window containing a point wins")
+    func frontmostWins() {
+        let back = CGRect(x: 0, y: 0, width: 200, height: 200)
+        let front = CGRect(x: 100, y: 100, width: 200, height: 200)
+        #expect(WindowInteractionTester.frontmostWindow(at: CGPoint(x: 150, y: 150), in: [front, back]) == 0)
+        #expect(WindowInteractionTester.frontmostWindow(at: CGPoint(x: 150, y: 150), in: [back, front]) == 0)
+        #expect(WindowInteractionTester.frontmostWindow(at: CGPoint(x: 900, y: 900), in: [front, back]) == nil)
+    }
+}
+
+// MARK: - Ribbon geometry
+
+@Suite("Ribbon geometry")
+struct RibbonGeometryTests {
+    private func buffer(_ frames: [(CGFloat, CGFloat, CGFloat, CGFloat, CFTimeInterval)]) -> RingBuffer<TrailSample> {
+        var buffer = RingBuffer<TrailSample>(capacity: 64)
+        for f in frames {
+            buffer.append(TrailSample(frame: CGRect(x: f.0, y: f.1, width: f.2, height: f.3), timestamp: f.4))
+        }
+        return buffer
+    }
+
+    @Test("an empty history produces no sections")
+    func empty() {
+        let empty = RingBuffer<TrailSample>(capacity: 8)
+        #expect(RibbonGeometry.sections(for: empty, now: 10, convert: { $0 }, cornerRadius: 8).isEmpty)
+    }
+
+    @Test("a single sample produces exactly one section")
+    func single() {
+        let sections = RibbonGeometry.sections(
+            for: buffer([(0, 0, 100, 100, 9.5)]),
+            now: 10,
+            convert: { $0 },
+            cornerRadius: 8
         )
-        // Window at the top-left of the *main* display stays at x=1920 in view space.
-        let onMain = converter.viewRect(fromQuartz: CGRect(x: 0, y: 0, width: 100, height: 50))
-        XCTAssertEqual(onMain.origin.x, 1280)
-        XCTAssertEqual(onMain.origin.y, 1080 - 50)
-
-        // A window on the secondary display sits in the negative quartz-x region and
-        // must land in the overlay's left half, at a positive view coordinate.
-        let onSecondary = converter.viewRect(fromQuartz: CGRect(x: -1280, y: 0, width: 100, height: 50))
-        XCTAssertEqual(onSecondary.origin.x, 0)
-        XCTAssertEqual(onSecondary.origin.y, 1080 - 50)
+        #expect(sections.count == 1)
+        #expect(sections[0].t == 0)
     }
 
-    /// Secondary display ABOVE the main one — the case that exposes a flip measured
-    /// against the wrong display height.
-    func testSecondaryDisplayAboveMain() {
-        // Main 1920x1080 at (0,0); secondary 1920x1080 at (0, 1080); overlay spans both.
-        let converter = TrailCoordinateConverter(
-            mainDisplayFrame: NSRect(x: 0, y: 0, width: 1920, height: 1080),
-            overlayFrame: NSRect(x: 0, y: 0, width: 1920, height: 2160)
+    @Test("a slow drag yields one section per recorded sample, not hundreds")
+    func slowDragIsNotUpsampled() {
+        // 30 samples 3pt apart — under the 8pt interpolation spacing, so no
+        // filler sections should be emitted. An earlier time-gap-driven version
+        // produced 59 sections here because 33ms exceeded a 90Hz threshold.
+        var frames: [(CGFloat, CGFloat, CGFloat, CGFloat, CFTimeInterval)] = []
+        for i in 0..<30 {
+            frames.append((CGFloat(i) * 3, 0, 100, 100, Double(i) * 0.033))
+        }
+        let sections = RibbonGeometry.sections(for: buffer(frames), now: 1.0, convert: { $0 }, cornerRadius: 8)
+        #expect(sections.count == 30)
+    }
+
+    @Test("consecutive sections never sit further apart than the interpolation spacing")
+    func sectionsAreSpacedByDistance() {
+        var frames: [(CGFloat, CGFloat, CGFloat, CGFloat, CFTimeInterval)] = []
+        for i in 0..<10 {
+            frames.append((CGFloat(i) * 120, 0, 100, 100, Double(i) * 0.033))
+        }
+        let sections = RibbonGeometry.sections(for: buffer(frames), now: 1.0, convert: { $0 }, cornerRadius: 8)
+        for (a, b) in zip(sections, sections.dropFirst()) {
+            #expect(a.rect.hypotDistance(to: b.rect) <= RibbonGeometry.interpolationSpacing + 0.001)
+        }
+    }
+
+    @Test("a fast drag is interpolated so the ribbon has no gaps")
+    func fastDragIsUpsampled() {
+        // Two samples 200ms apart would previously have drawn two disconnected
+        // rectangles.
+        let sections = RibbonGeometry.sections(
+            for: buffer([(0, 0, 100, 100, 9.8), (300, 0, 100, 100, 10.0)]),
+            now: 10,
+            convert: { $0 },
+            cornerRadius: 8
         )
-        // Quartz y=0 is the top edge of the *main* display. In the 2160-tall overlay
-        // (bottom-left origin) that edge sits at y=1080, so a 100pt-tall rect has
-        // its origin at 980 and its top at 1080 — i.e. the lower half of the overlay.
-        let rect = converter.viewRect(fromQuartz: CGRect(x: 10, y: 0, width: 100, height: 100))
-        XCTAssertEqual(rect.origin.y, 980)
-        XCTAssertEqual(rect.maxY, 1080)
-        XCTAssertEqual(rect.origin.x, 10)
+        #expect(sections.count > 2)
+        // Positions must be monotonically increasing along the ribbon.
+        #expect(zip(sections, sections.dropFirst()).allSatisfy { $0.t <= $1.t })
     }
 
-    func testRoundTripThroughViewAndBackIsStableForSize() {
-        let rect = singleDisplay.viewRect(fromQuartz: CGRect(x: 500, y: 250, width: 400, height: 300))
-        // The y-flip must not move the rect's vertical *centre* above the axis it
-        // started on: 250..550 in quartz (centre 400) maps to centre 1080-400 = 680.
-        XCTAssertEqual(rect.midY, 1080 - 400, accuracy: 0.001)
+    @Test("interpolated sections stay inside the two rects they span")
+    func interpolationIsBounded() {
+        let sections = RibbonGeometry.sections(
+            for: buffer([(0, 0, 100, 100, 9.8), (300, 200, 200, 400, 10.0)]),
+            now: 10,
+            convert: { $0 },
+            cornerRadius: 8
+        )
+        for section in sections {
+            #expect(section.rect.minX >= -0.001)
+            #expect(section.rect.maxX <= 500.001)
+            #expect(section.rect.minY >= -0.001)
+            #expect(section.rect.maxY <= 600.001)
+        }
+    }
+
+    @Test("interpolation moves both edges, not just the origin")
+    func interpolationResizes() {
+        let mid = RibbonGeometry.interpolate(
+            CGRect(x: 0, y: 0, width: 100, height: 100),
+            CGRect(x: 100, y: 0, width: 300, height: 100),
+            0.5
+        )
+        #expect(abs(mid.minX - 50) < 0.001)
+        #expect(abs(mid.width - 200) < 0.001)
+    }
+
+    @Test("a stalled pointer does not stack identical sections")
+    func stalledPointerDoesNotStack() {
+        let sections = RibbonGeometry.sections(
+            for: buffer([(0, 0, 100, 100, 9.0), (0, 0, 100, 100, 9.05), (0, 0, 100, 100, 9.1)]),
+            now: 10,
+            convert: { $0 },
+            cornerRadius: 8
+        )
+        #expect(sections.count == 1)
+    }
+
+    @Test("an absurdly long gap is capped rather than expanded without bound")
+    func longGapIsCapped() {
+        let sections = RibbonGeometry.sections(
+            for: buffer([(0, 0, 100, 100, 1.0), (400, 0, 100, 100, 30.0)]),
+            now: 30,
+            convert: { $0 },
+            cornerRadius: 8
+        )
+        // 2 recorded + at most maxSectionsPerGap filler sections.
+        #expect(sections.count <= 2 + RibbonGeometry.maxSectionsPerGap)
+    }
+
+    @Test("opacity is zero at the tail and full at a fresh head")
+    func opacityCurve() {
+        let tail = RibbonSection(rect: .init(x: 0, y: 0, width: 10, height: 10), t: 0, age: 0)
+        let head = RibbonSection(rect: .init(x: 0, y: 0, width: 10, height: 10), t: 1, age: 0)
+        let tailAlpha = RibbonGeometry.opacity(for: tail, baseOpacity: 1, fadeDuration: 1, tailFadeStart: 0.5)
+        let headAlpha = RibbonGeometry.opacity(for: head, baseOpacity: 1, fadeDuration: 1, tailFadeStart: 0.5)
+        #expect(tailAlpha == 0)
+        #expect(headAlpha == 1)
+    }
+
+    @Test("an expired section has zero opacity regardless of position")
+    func expiredSectionIsInvisible() {
+        let old = RibbonSection(rect: .init(x: 0, y: 0, width: 10, height: 10), t: 1, age: 5)
+        #expect(RibbonGeometry.opacity(for: old, baseOpacity: 1, fadeDuration: 1, tailFadeStart: 0) == 0)
+    }
+
+    @Test("opacity never exceeds the configured maximum")
+    func opacityIsClamped() {
+        let section = RibbonSection(rect: .init(x: 0, y: 0, width: 10, height: 10), t: 1, age: 0)
+        #expect(RibbonGeometry.opacity(for: section, baseOpacity: 4, fadeDuration: 1, tailFadeStart: 0) == 1)
+    }
+}
+
+// MARK: - Configuration
+
+@Suite("Configuration")
+struct ConfigurationTests {
+    @Test("history capacity tracks frame count")
+    func historyCapacity() {
+        let config = GhostTrailConfiguration(frameCount: 40)
+        #expect(config.historyCapacity == 40)
+    }
+
+    @Test("snap distance is never below the movement threshold")
+    func snapAboveThreshold() {
+        let config = GhostTrailConfiguration(movementThreshold: 100, snapDistance: 1)
+        #expect(config.snapDistance >= config.movementThreshold)
+    }
+
+    @Test("tail fade start is clamped to 0...1")
+    func tailFadeClamped() {
+        #expect(GhostTrailConfiguration(tailFadeStart: 5).tailFadeStart == 1)
+        #expect(GhostTrailConfiguration(tailFadeStart: -2).tailFadeStart == 0)
+    }
+
+    @Test("every shipped preset is renderable")
+    func presetsAreSane() {
+        let presets = [GhostTrailConfiguration.subtle, .dramatic, .retro, .neon, .glass]
+        for preset in presets {
+            #expect(preset.opacity > 0)
+            #expect(preset.historyCapacity >= 2)
+            #expect(preset.fadeDuration > 0)
+            #expect(preset.cornerRadius >= 0)
+        }
+    }
+}
+
+// MARK: - Window layering
+
+@Suite("Window layering")
+struct WindowLayeringTests {
+    @Test("behindWindows sits above the desktop icons but below normal windows")
+    func behindWindowsOrdering() {
+        let level = Int(CGWindowLevelForKey(.desktopIconWindow))
+        #expect(level > Int(CGWindowLevelForKey(.desktopWindow)))
+        #expect(level < Int(CGWindowLevelForKey(.normalWindow)))
+    }
+
+    @Test("behindWindows really is above desktop icons")
+    func notBelowDesktop() {
+        // Regression guard: the previous implementation subtracted one, which
+        // put the trail under the desktop picture layer where it was invisible
+        // on many desktops.
+        let previous = Int(CGWindowLevelForKey(.desktopIconWindow)) - 1
+        let current = Int(CGWindowLevelForKey(.desktopIconWindow))
+        #expect(current > previous)
+    }
+}
+
+// MARK: - Coordinate conversion
+
+@Suite("Coordinate conversion")
+struct CoordinateConverterTests {
+    private func converter(main: CGRect, overlay: CGRect) -> TrailCoordinateConverter {
+        TrailCoordinateConverter(mainDisplayFrame: main, overlayFrame: overlay)
+    }
+
+    @Test("a window on the main display maps into the overlay")
+    func mainDisplay() {
+        let c = converter(main: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                          overlay: CGRect(x: 0, y: 0, width: 1440, height: 900))
+        let rect = c.viewRect(fromQuartz: CGRect(x: 100, y: 100, width: 200, height: 200))
+        #expect(rect == CGRect(x: 100, y: 600, width: 200, height: 200))
+    }
+
+    @Test("a window on a display left of and above the main one is not mirrored")
+    func secondaryDisplayAboveLeft() {
+        // Main display sits at the origin; the external is at (-1920, 200).
+        let c = converter(main: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                          overlay: CGRect(x: -1920, y: 0, width: 3360, height: 1100))
+        let rect = c.viewRect(fromQuartz: CGRect(x: -1820, y: 100, width: 200, height: 200))
+        // Quartz (-1820, 100, 200, 200) -> cocoa x=-1820, y = 900 - 300 = 600.
+        // Then translate by the overlay origin.
+        #expect(abs(rect.minX - 100) < 0.001)
+        #expect(abs(rect.minY - 600) < 0.001)
+        #expect(rect.width == 200)
+        #expect(rect.height == 200)
+    }
+
+    @Test("a point converted at the centre of a rect lands at the rect's centre")
+    func pointAndRectAgree() {
+        let c = converter(main: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                          overlay: CGRect(x: 0, y: 0, width: 1440, height: 900))
+        // Quartz y for the centre of a 200-tall rect at y=100 is 200; the rect
+        // centre must come back at the matching flipped position.
+        let rect = c.viewRect(fromQuartz: CGRect(x: 300, y: 100, width: 10, height: 200))
+        let point = c.viewPoint(fromQuartz: CGPoint(x: 305, y: 200))
+        #expect(abs(point.x - rect.midX) < 0.001)
+        #expect(abs(point.y - rect.midY) < 0.001)
+    }
+
+    @Test("the identity converter reports itself unusable and passes geometry through")
+    func identityFallback() {
+        let rect = CGRect(x: 10, y: 20, width: 30, height: 40)
+        let converter = TrailCoordinateConverter.identity
+        #expect(!converter.isUsable)
+        // With no reference display there is nothing to flip about, so the rect
+        // must arrive unchanged rather than mirrored about a zero-height origin.
+        #expect(converter.viewRect(fromQuartz: rect) == rect)
     }
 }

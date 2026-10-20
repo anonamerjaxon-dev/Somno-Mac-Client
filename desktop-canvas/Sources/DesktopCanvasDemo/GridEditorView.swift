@@ -839,20 +839,11 @@ final class GridCanvasNSView: NSView {
     }
 
     private func fillLine(from r0: Int, _ c0: Int, to r1: Int, _ c1: Int, alive: Bool) {
-        var r = r0
-        var c = c0
-        let dr = abs(r1 - r0)
-        let dc = abs(c1 - c0)
-        let sr = r0 < r1 ? 1 : -1
-        let sc = c0 < c1 ? 1 : -1
-        var err = dr - dc
-
-        while true {
-            drawCell(r, c, alive: alive)
-            if r == r1, c == c1 { break }
-            let e2 = 2 * err
-            if e2 > -dc { err -= dc; r += sr }
-            if e2 < dr { err += dr; c += sc }
+        // Reuse the library's Bresenham rather than a third private copy, so the
+        // line the editor previews is the one the provider renders. `drawCell`
+        // clips to the grid and only bumps `gridGeneration` on a real change.
+        for cell in BrushTool.lineCells(fromRow: r0, fromCol: c0, toRow: r1, toCol: c1) {
+            drawCell(cell.row, cell.col, alive: alive)
         }
     }
 

@@ -2,7 +2,9 @@ import AppKit
 import Metal
 import MetalKit
 
-private let metalShaderSource = """
+/// Internal, not private, so the orientation regression test can compile the
+/// exact same source it is guarding.
+let metalShaderSource = """
 #include <metal_stdlib>
 using namespace metal;
 
@@ -64,7 +66,6 @@ struct FragmentParams {
     uint gridHeight;
     float cellSize;
     float viewWidth;
-    float viewHeight;
     float4 aliveColor;
     float4 deadColor;
     float4 marginColor;
@@ -75,8 +76,12 @@ fragment float4 gameOfLifeFragment(
     constant FragmentParams& params   [[buffer(0)]],
     device const uint8_t*   grid     [[buffer(1)]]
 ) {
+    // Metal's fragment `[[position]]` already has its origin at the TOP-LEFT of
+    // the drawable, and the grid editor draws row 0 at the top (it overrides
+    // `isFlipped` to true), so row 0 must land at the top here too. Do NOT flip
+    // y here: doing so rendered the grid vertically mirrored against the editor.
+    // `GameOfLifeOrientationTests` pins this with a real render + readback.
     float2 fragPos = in.position.xy;
-    fragPos.y = params.viewHeight - fragPos.y;
 
     uint col = uint(floor(fragPos.x / params.cellSize));
     uint row = uint(floor(fragPos.y / params.cellSize));
@@ -209,6 +214,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         case noDevice
         case noCommandQueue
         case missingShaderFunction
+        case bufferAllocationFailed(component: String)
 
         var errorDescription: String? {
             switch self {
@@ -218,6 +224,8 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
                 return "Metal could not create a command queue for this device."
             case .missingShaderFunction:
                 return "The built-in Game of Life shader is missing a required function."
+            case .bufferAllocationFailed(let component):
+                return "Metal could not allocate the Game of Life \(component) buffer."
             }
         }
     }
@@ -261,7 +269,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         guard totalCells > 0,
               let newBufferA = device.makeBuffer(length: totalCells, options: .storageModeShared),
               let newBufferB = device.makeBuffer(length: totalCells, options: .storageModeShared) else {
-            record(SetupFailure.noCommandQueue)
+            record(SetupFailure.bufferAllocationFailed(component: "grid"))
             return
         }
         bufferA = newBufferA
@@ -327,9 +335,13 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         let newTimer = DispatchSource.makeTimerSource(queue: timerQueue)
         newTimer.schedule(deadline: .now() + interval, repeating: interval, leeway: .nanoseconds(0))
         newTimer.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            self.needsCompute = true
+            // `needsCompute` is read by `draw(_:)` and written by every grid
+            // mutation, all of which happen on the main thread. Hop back to the
+            // main queue before touching it so the timer never mutates it from
+            // `timerQueue` (a data race under Swift's memory model).
             DispatchQueue.main.async {
+                guard let self else { return }
+                self.needsCompute = true
                 self.setNeedsDisplay(self.bounds)
             }
         }
@@ -415,7 +427,7 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
         guard newTotal > 0,
               let newBufferA = device.makeBuffer(length: newTotal, options: .storageModeShared),
               let newBufferB = device.makeBuffer(length: newTotal, options: .storageModeShared) else {
-            record(SetupFailure.noCommandQueue)
+            record(SetupFailure.bufferAllocationFailed(component: "resize"))
             return
         }
 
@@ -492,7 +504,10 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
 
     public func setCell(row: Int, col: Int, alive: Bool) {
         guard row >= 0, row < gridHeight, col >= 0, col < gridWidth else { return }
-        withCurrentBuffer({ $0[row * gridWidth + col] = alive ? 1 : 0 }, default: ())
+        withCurrentBuffer({
+            BrushTool.setCell($0, width: gridWidth, height: gridHeight,
+                              row: row, col: col, alive: alive)
+        }, default: ())
         markDirty()
     }
 
@@ -501,48 +516,19 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     }
 
     public func fillRect(minRow: Int, minCol: Int, maxRow: Int, maxCol: Int, alive: Bool) {
-        let r0 = max(0, minRow)
-        let c0 = max(0, minCol)
-        let r1 = min(gridHeight - 1, maxRow)
-        let c1 = min(gridWidth - 1, maxCol)
-        guard r0 <= r1, c0 <= c1 else { return }
-
-        let value: UInt8 = alive ? 1 : 0
-        withCurrentBuffer({ ptr in
-            for row in r0...r1 {
-                let base = row * gridWidth
-                for col in c0...c1 {
-                    ptr[base + col] = value
-                }
-            }
+        withCurrentBuffer({
+            BrushTool.fillRect($0, width: gridWidth, height: gridHeight,
+                               minRow: minRow, minCol: minCol,
+                               maxRow: maxRow, maxCol: maxCol, alive: alive)
         }, default: ())
         markDirty()
     }
 
     public func drawLine(fromRow: Int, fromCol: Int, toRow: Int, toCol: Int, alive: Bool) {
-        var r0 = fromRow
-        var c0 = fromCol
-        let r1 = toRow
-        let c1 = toCol
-
-        let dr = abs(r1 - r0)
-        let dc = abs(c1 - c0)
-        let sr = r0 < r1 ? 1 : -1
-        let sc = c0 < c1 ? 1 : -1
-        var err = dr - dc
-
-        let value: UInt8 = alive ? 1 : 0
-
-        withCurrentBuffer({ ptr in
-            while true {
-                if r0 >= 0, r0 < gridHeight, c0 >= 0, c0 < gridWidth {
-                    ptr[r0 * gridWidth + c0] = value
-                }
-                if r0 == r1, c0 == c1 { break }
-                let e2 = 2 * err
-                if e2 > -dc { err -= dc; r0 += sr }
-                if e2 < dr { err += dr; c0 += sc }
-            }
+        withCurrentBuffer({
+            BrushTool.drawLine($0, width: gridWidth, height: gridHeight,
+                               fromRow: fromRow, fromCol: fromCol,
+                               toRow: toRow, toCol: toCol, alive: alive)
         }, default: ())
         markDirty()
     }
@@ -554,22 +540,10 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
     }
 
     public func randomSeed(density: Double = 0.5) {
-        let total = gridWidth * gridHeight
-        let clampedDensity = density.isFinite ? min(max(density, 0), 1) : 0.5
-        let threshold = UInt8(clampedDensity * 255)
-
-        let chunkSize = 4096
-        var randomBuffer = [UInt8](repeating: 0, count: chunkSize)
-        var offset = 0
-        withCurrentBuffer({ ptr in
-            while offset < total {
-                let remaining = min(chunkSize, total - offset)
-                arc4random_buf(&randomBuffer, remaining)
-                for i in 0..<remaining {
-                    ptr[offset + i] = randomBuffer[i] < threshold ? 1 : 0
-                }
-                offset += remaining
-            }
+        let count = gridWidth * gridHeight
+        var generator: any RandomNumberGenerator = SystemRandomNumberGenerator()
+        withCurrentBuffer({
+            BrushTool.seedGrid($0, count: count, density: density, using: &generator)
         }, default: ())
         markDirty()
     }
@@ -602,16 +576,22 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
               let config = canvas.gameOfLifeConfig,
               let drawable = currentDrawable,
               let rpDesc = currentRenderPassDescriptor,
-              let cmdBuf = commandQueue.makeCommandBuffer(),
-              let currentGrid = useBufferA ? bufferA : bufferB else {
+              bufferA != nil,
+              bufferB != nil else {
             return
         }
 
+        // Step the simulation in its own command buffer. The previous version
+        // encoded the step into the render command buffer and only then created
+        // the render encoder, so a nil render pipeline/encoder returned without
+        // committing — after `useBufferA` had flipped and `needsCompute` had
+        // been cleared, silently discarding the generation that was just computed.
         if needsCompute,
            let inputBuffer = useBufferA ? bufferA : bufferB,
            let outputBuffer = useBufferA ? bufferB : bufferA,
            let computePipeline,
-           let computeEncoder = cmdBuf.makeComputeCommandEncoder() {
+           let computeCmdBuf = commandQueue.makeCommandBuffer(),
+           let computeEncoder = computeCmdBuf.makeComputeCommandEncoder() {
             var gridParams = GridParams(
                 width: UInt32(gridWidth),
                 height: UInt32(gridHeight),
@@ -628,12 +608,17 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
             let gridSize = MTLSize(width: gridWidth, height: gridHeight, depth: 1)
             computeEncoder.dispatchThreads(gridSize, threadsPerThreadgroup: threadGroupSize)
             computeEncoder.endEncoding()
+            computeCmdBuf.commit()
 
             useBufferA = !useBufferA
             needsCompute = false
         }
 
+        // Resolved *after* the step above so the render samples the generation
+        // that was just computed rather than the previous frame's buffer.
         guard let renderPipeline,
+              let currentGrid = useBufferA ? bufferA : bufferB,
+              let cmdBuf = commandQueue.makeCommandBuffer(),
               let renderEncoder = cmdBuf.makeRenderCommandEncoder(descriptor: rpDesc) else {
             return
         }
@@ -649,7 +634,6 @@ public final class GameOfLifeProvider: MTKView, CanvasProvider {
             gridHeight: UInt32(gridHeight),
             cellSize: Float(config.cellSize) * scale,
             viewWidth: Float(drawableSize.width),
-            viewHeight: Float(drawableSize.height),
             aliveColor: colorToFloat4(config.aliveColor),
             deadColor: colorToFloat4(config.deadColor),
             marginColor: colorToFloat4(config.marginColor)
@@ -682,12 +666,13 @@ private struct GridParams {
     var survivalMask: UInt32
 }
 
-private struct FragmentParams {
+/// Internal, not private, so the orientation regression test can render through
+/// the exact same pipeline and read the result back.
+struct FragmentParams {
     var gridWidth: UInt32
     var gridHeight: UInt32
     var cellSize: Float
     var viewWidth: Float
-    var viewHeight: Float
     var aliveColor: SIMD4<Float>
     var deadColor: SIMD4<Float>
     var marginColor: SIMD4<Float>

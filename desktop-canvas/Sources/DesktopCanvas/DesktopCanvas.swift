@@ -44,6 +44,20 @@ public final class DesktopCanvas {
 
         Self.saveLastUsedPreset(layout)
 
+        // Providers are built synchronously above, so their Metal setup has
+        // already succeeded or failed. Surface a failure instead of leaving the
+        // user with a silently blank canvas.
+        let setupErrors = manager.gameOfLifeProviders()
+            .compactMap { $0.initializationError?.localizedDescription }
+        if !setupErrors.isEmpty {
+            let distinct = Set(setupErrors).sorted()
+            return .warning(
+                "Metal setup failed for \(setupErrors.count) canvas(es): "
+                + distinct.joined(separator: "; ")
+                + " Those canvases will stay blank."
+            )
+        }
+
         if totalCells > 10_000_000 {
             return .warning("Total Game of Life cells (\(totalCells)) exceeds recommended limit of 10M. Performance may degrade.")
         }
@@ -64,6 +78,17 @@ public final class DesktopCanvas {
             return
         }
         body(provider)
+    }
+
+    /// Distinct Metal setup errors from the applied Game of Life canvases.
+    ///
+    /// Empty when every canvas initialised. Useful for an editor that wants to
+    /// show a persistent warning alongside the layout.
+    public func gameOfLifeInitializationErrors() -> [String] {
+        guard let screenManager else { return [] }
+        return Set(screenManager.gameOfLifeProviders()
+            .compactMap { $0.initializationError?.localizedDescription })
+            .sorted()
     }
 
     public func savePreset(_ layout: CanvasLayout, named name: String) throws {

@@ -4,15 +4,23 @@ import CoreGraphics
 /// places they are drawn: one borderless `CanvasWindow` per `NSScreen`, and the
 /// editor's scaled preview.
 ///
-/// Both destinations are *upside down* relative to the stored layout, and for
-/// the same reason: `CanvasWindow` is positioned with `NSWindow.setFrame`, whose
-/// rectangle is in the bottom-left, y-up Cocoa global space that `NSScreen.frame`
-/// also uses. The stored layout follows the same convention, so a canvas frame is
-/// used verbatim there. The editor preview, however, draws like a document — top
-/// edge first — so its mapping flips y for the whole arrangement. That is why
-/// `previewRect` flips and `localFrame` does not: without the preview flip a
-/// canvas would appear near the top of the editor while rendering near the bottom
-/// of the screen (the dock side).
+/// ## One convention, everywhere: bottom-left origin, y grows upward
+///
+/// There is exactly one coordinate convention in this module, and both
+/// destinations share it with the stored layout:
+///
+/// * `CanvasLayout` stores frames in Cocoa global space (`NSScreen.frame`).
+/// * `CanvasWindow` is positioned with `NSWindow.setFrame`, which is that same
+///   bottom-left, y-up space, so `localFrame` only translates.
+/// * The editor preview's `LayoutNSView` does **not** override `isFlipped`, so
+///   it is also y-up. `previewRect` therefore only scales and translates — it
+///   must **not** flip y.
+///
+/// This matters: a flip in only one of the two mappings makes the same canvas
+/// appear near the top of the editor while rendering near the bottom of the
+/// screen (the dock side). Any future view that draws the layout must either
+/// stay unflipped, or the mapping that feeds it must flip — never one without
+/// the other. `OverlapMathTests` pins this agreement.
 public enum ScreenGeometry {
 
     // MARK: - Per-screen windows
@@ -67,35 +75,36 @@ public enum ScreenGeometry {
 
     /// Canvas rect → the editor preview's rect.
     ///
+    /// Pure scale-and-translate, no y flip: the preview view is unflipped (see
+    /// the type comment), so it shares the stored layout's orientation.
+    ///
     /// - Parameters:
     ///   - rect: canvas rect in the space `CanvasLayout` stores.
-    ///   - unionFrame: the Cocoa union of every screen the preview covers.
     ///   - scale: preview scale factor.
-    ///   - offset: preview offset, already in view coordinates.
+    ///   - offset: preview offset, already in view coordinates. The caller folds
+    ///     the union's origin into it, so the union is not needed here.
     public static func previewRect(
         for rect: CGRect,
-        unionFrame: CGRect,
         scale: CGFloat,
         offset: CGPoint
     ) -> CGRect {
         CGRect(
-            x: (rect.minX - unionFrame.minX) * scale + offset.x,
-            y: (unionFrame.maxY - rect.maxY) * scale + offset.y,
+            x: rect.minX * scale + offset.x,
+            y: rect.minY * scale + offset.y,
             width: rect.width * scale,
             height: rect.height * scale
         )
     }
 
-    /// Inverse of `previewRect(for:unionFrame:scale:offset:)` for a single point.
+    /// Inverse of `previewRect(for:scale:offset:)` for a single point.
     public static func canvasPoint(
         fromViewPoint viewPoint: CGPoint,
-        unionFrame: CGRect,
         scale: CGFloat,
         offset: CGPoint
     ) -> CGPoint {
         CGPoint(
-            x: (viewPoint.x - offset.x) / scale + unionFrame.minX,
-            y: unionFrame.maxY - (viewPoint.y - offset.y) / scale
+            x: (viewPoint.x - offset.x) / scale,
+            y: (viewPoint.y - offset.y) / scale
         )
     }
 }

@@ -76,6 +76,10 @@ final class ScreenManager {
         return nil
     }
 
+    func gameOfLifeProviders() -> [GameOfLifeProvider] {
+        windows.values.flatMap { $0.gameOfLifeProviders() }
+    }
+
     func refresh(with layout: CanvasLayout? = nil) {
         if let layout { self.layout = layout }
         guard let layout = self.layout else { return }

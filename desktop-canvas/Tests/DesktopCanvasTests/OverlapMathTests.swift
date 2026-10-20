@@ -271,68 +271,102 @@ final class OverlapMathTests: XCTestCase {
         )
     }
 
-    func testPreviewRectPutsTheScreenTopAtTheViewsTop() {
-        // Primary display, union == screen. y = 0 in canvas space is the top of
-        // the display (the menu-bar side), which must draw at the view's top.
-        let union = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    func testPreviewKeepsTheLayoutsOrientation() {
+        // The preview view (`LayoutNSView`) does NOT override `isFlipped`, so it
+        // shares the stored layout's bottom-left, y-up convention. A canvas near
+        // the bottom of the display must land near the bottom of the preview,
+        // exactly as it renders on the desktop. Flipping only the preview made a
+        // dock-side canvas appear at the top of the editor.
         let scale: CGFloat = 0.5
         let offset = CGPoint(x: 10, y: 20)
 
-        let topAnchored = ScreenGeometry.previewRect(
+        let nearBottom = ScreenGeometry.previewRect(
+            for: CGRect(x: 0, y: 60, width: 400, height: 300),
+            scale: scale, offset: offset
+        )
+        let nearTop = ScreenGeometry.previewRect(
             for: CGRect(x: 0, y: 780, width: 400, height: 300),
-            unionFrame: union, scale: scale, offset: offset
+            scale: scale, offset: offset
         )
-        XCTAssertEqual(topAnchored.minY, offset.y)
 
-        let bottomAnchored = ScreenGeometry.previewRect(
-            for: CGRect(x: 0, y: 0, width: 400, height: 300),
-            unionFrame: union, scale: scale, offset: offset
-        )
-        XCTAssertEqual(bottomAnchored.maxY, offset.y + union.height * scale)
+        // Lower stored y == lower view y (do not flip).
+        XCTAssertLessThan(nearBottom.minY, nearTop.minY)
+        XCTAssertEqual(nearBottom.minY, 60 * scale + offset.y, accuracy: 0.0001)
+        XCTAssertEqual(nearTop.minY, 780 * scale + offset.y, accuracy: 0.0001)
+        XCTAssertEqual(nearBottom.minX, offset.x, accuracy: 0.0001)
     }
 
     func testPreviewRectRoundTripsThroughCanvasPoint() {
-        let union = CGRect(x: -1920, y: -200, width: 2880, height: 1080)
         let scale: CGFloat = 0.37
         let offset = CGPoint(x: -13, y: 71)
         let canvas = CGRect(x: -1500, y: 300, width: 640, height: 480)
 
         let preview = ScreenGeometry.previewRect(
-            for: canvas, unionFrame: union, scale: scale, offset: offset
+            for: canvas, scale: scale, offset: offset
         )
         let corners = [preview.origin,
                        CGPoint(x: preview.maxX, y: preview.maxY)]
         let recovered = corners.map {
             ScreenGeometry.canvasPoint(
-                fromViewPoint: $0, unionFrame: union, scale: scale, offset: offset
+                fromViewPoint: $0, scale: scale, offset: offset
             )
         }
         XCTAssertEqual(recovered[0].x, canvas.minX, accuracy: 0.0001)
-        XCTAssertEqual(recovered[0].y, canvas.maxY, accuracy: 0.0001)
+        XCTAssertEqual(recovered[0].y, canvas.minY, accuracy: 0.0001)
         XCTAssertEqual(recovered[1].x, canvas.maxX, accuracy: 0.0001)
-        XCTAssertEqual(recovered[1].y, canvas.minY, accuracy: 0.0001)
+        XCTAssertEqual(recovered[1].y, canvas.maxY, accuracy: 0.0001)
     }
 
     func testPreviewMappingAgreesWithTheWindowMapping() {
         // The whole point of routing both through ScreenGeometry: the canvas
         // drawn in the preview and the canvas shown on the desktop must describe
-        // the same physical rectangle, up to the preview's scale.
+        // the same physical rectangle, up to the preview's scale. Both are y-up,
+        // so their distances from the display's bottom edge agree directly.
         let union = CGRect(x: 0, y: 0, width: 1920, height: 1080)
         let canvas = CGRect(x: 220, y: 60, width: 800, height: 500)
         let scale: CGFloat = 0.25
+        let offset = CGPoint(x: 40, y: 25)
 
         let preview = ScreenGeometry.previewRect(
-            for: canvas, unionFrame: union, scale: scale, offset: .zero
+            for: canvas, scale: scale, offset: offset
         )
         let windowFrame = ScreenGeometry.localFrame(for: canvas, in: union)
 
-        // Preview y measures down from the union's top edge; window y measures up
-        // from the screen's bottom edge. Both must place the canvas identically.
-        XCTAssertEqual(preview.minY / scale, union.maxY - windowFrame.maxY, accuracy: 0.0001)
-        XCTAssertEqual(preview.maxY / scale, union.maxY - windowFrame.minY, accuracy: 0.0001)
-        XCTAssertEqual(preview.minX / scale, windowFrame.minX, accuracy: 0.0001)
+        XCTAssertEqual((preview.minY - offset.y) / scale, windowFrame.minY, accuracy: 0.0001)
+        XCTAssertEqual((preview.maxY - offset.y) / scale, windowFrame.maxY, accuracy: 0.0001)
+        XCTAssertEqual((preview.minX - offset.x) / scale, windowFrame.minX, accuracy: 0.0001)
         XCTAssertEqual(preview.width / scale, windowFrame.width, accuracy: 0.0001)
         XCTAssertEqual(preview.height / scale, windowFrame.height, accuracy: 0.0001)
+    }
+
+    func testPreviewMapsANegativeUnionOriginToTheCentredBox() {
+        // A display left of / below the primary one gives the screen union a
+        // negative origin, which the editor folds into `offset`. The mapping must
+        // not subtract that origin a second time, or the whole arrangement is
+        // pushed off the view.
+        let union = CGRect(x: -1920, y: -200, width: 2880, height: 1080)
+        let bounds = CGSize(width: 1200, height: 500)
+        let pad: CGFloat = 40
+        let scale = min(bounds.width / (union.width + 2 * pad),
+                        bounds.height / (union.height + 2 * pad))
+        let scaled = CGSize(width: union.width * scale, height: union.height * scale)
+        let offset = CGPoint(
+            x: (bounds.width - scaled.width) / 2 - union.minX * scale,
+            y: (bounds.height - scaled.height) / 2 - union.minY * scale
+        )
+
+        let box = ScreenGeometry.previewRect(for: union, scale: scale, offset: offset)
+        XCTAssertEqual(box.minX, (bounds.width - scaled.width) / 2, accuracy: 0.0001)
+        XCTAssertEqual(box.minY, (bounds.height - scaled.height) / 2, accuracy: 0.0001)
+        XCTAssertEqual(box.maxX, (bounds.width + scaled.width) / 2, accuracy: 0.0001)
+        XCTAssertEqual(box.maxY, (bounds.height + scaled.height) / 2, accuracy: 0.0001)
+
+        let centre = ScreenGeometry.previewRect(
+            for: CGRect(x: union.midX, y: union.midY, width: 0, height: 0),
+            scale: scale, offset: offset
+        )
+        XCTAssertEqual(centre.minX, bounds.width / 2, accuracy: 0.0001)
+        XCTAssertEqual(centre.minY, bounds.height / 2, accuracy: 0.0001)
     }
 
     // MARK: - Drag-time resolution (design spec: "Canvas overlap prevention")

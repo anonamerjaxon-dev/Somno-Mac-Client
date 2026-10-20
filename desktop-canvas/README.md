@@ -75,20 +75,27 @@ swift test
 
 ## Coordinate spaces
 
-Three coordinate systems are involved, and confusing them is what puts canvases
-on the wrong display or mirrored vertically:
+**One convention: bottom-left origin, y grows up.** Every space below shares it,
+so nothing flips y. Getting this wrong is what puts canvases on the wrong display
+or mirrors them vertically.
 
 | Space | Origin | y direction | Used by |
 |---|---|---|---|
 | Canvas / layout | bottom-left of the **primary** display | up | `CanvasModel.frame`, preset JSON |
 | `CanvasWindow` content view | bottom-left of **its own** `NSScreen` | up | desktop rendering |
-| Editor preview | top-left of the union of all screens | down | `VisualLayoutView` |
+| Editor preview (`LayoutNSView`) | bottom-left of the union of all screens | up | `VisualLayoutView` |
+| Game of Life grid | row 0 at the **top** | row index grows down | grid editor **and** the desktop shader |
 
-Because the window is placed at `screen.frame`, and `NSScreen.frame` uses the
-same space as the stored layout, the window path is a pure translation — no
-vertical mirroring. The editor preview draws document-style, so it is the one
-that flips y. All three mappings live in `ScreenGeometry` and are covered by
-tests in `Tests/DesktopCanvasTests/OverlapMathTests.swift`.
+Because the window is placed at `screen.frame`, and `NSScreen.frame` uses the same
+space as the stored layout, the window path is a pure translation. The preview
+view does not override `isFlipped`, so it is y-up too and needs only a scale and
+translate. Both mappings live in `ScreenGeometry` and are covered by
+`Tests/DesktopCanvasTests/OverlapMathTests.swift`; the grid rendering is pinned by
+`GameOfLifeOrientationTests`.
+
+> If you add a view that draws the layout, leave it **unflipped** and let
+> `ScreenGeometry` do the mapping. Flipping in one place and not the other is
+> exactly what produced lessons 0b and 0c below.
 
 ## Demo app usage
 
@@ -123,10 +130,19 @@ tests in `Tests/DesktopCanvasTests/OverlapMathTests.swift`.
 5. Stored at `~/Library/Application Support/DesktopCanvas/presets/`
 
 ### Snap helpers
-- Snap to screen edges, center, adjacent canvas edges, or grid (50pt default)
+- Snap to screen edges, center, adjacent canvas edges, or grid (6pt default threshold)
+- **x and y are snapped independently.** A vertical edge only ever considers x
+  targets and a horizontal edge only y targets, so a canvas can no longer jump
+  onto a number that describes the other axis (e.g. an x origin landing on the
+  screen's mid-height).
 - Hold **⌘** to temporarily disable snapping
 - **Fill Screen** button: fills the entire screen (aspect-fill for video, cell-size-snapped for GoL)
 - Grid snapping generates targets at every `layoutGridSize` multiple across the screen, so the toolbar toggle really snaps
+- Adjacent canvases are offered at both a flush edge and a `margin` gap
+  (`margin` is the same value the editor draws its guide lines at). When an
+  explicit edge snap wins during a resize, it is honoured even if it breaks the
+  Game of Life cell-size multiple — the snap you aimed at beats a whole number
+  of cells.
 - Dragging a canvas onto another pushes it clear instead of overlapping; a red border flashes to show the collision was prevented (hold **⌘** to override)
 
 ## Current state (Phases 9–11 complete)
@@ -184,9 +200,21 @@ paths, and the screen/preview coordinate mappings.
 **Problem:** The README claimed video canvases were "aspect-ratio locked" and that resizing preserved natural proportions, but `VideoProvider` hardcoded `videoGravity = .resizeAspectFill` and nothing constrained the canvas size. The docs described an intent the code never had.
 **Fix:** The claim was removed and the actual behaviour documented as a known limitation. `VideoProvider` still fills the canvas — cropping, not letterboxing.
 
-### 0b. One coordinate space, three conventions
-**Problem:** Layout frames, `NSScreen.frame`, and `NSWindow` content views all use bottom-left y-up Cocoa coordinates, but the editor preview draws top-down. Treating the layout as "global coordinates used directly as local contentView coords" was correct for the window path and wrong for the preview — the same canvas could only satisfy one of the two.
-**Fix:** A single `ScreenGeometry` enum owns all mappings. `localFrame(for:in:)` translates only; `previewRect(for:unionFrame:scale:offset:)` is the one that flips y. Tests pin both directions, and one test asserts preview and window agree on the same physical rectangle.
+### 0b. Two coordinate conventions where there should have been one
+**Problem:** The editor preview was vertically mirrored against the desktop: a canvas near the bottom of the screen (the dock side) drew near the *top* of the editor. Two bugs stacked. `previewRect` flipped y, and the offset it was handed already folded in the screen-union origin, so the union was subtracted a second time. `LayoutNSView` never overrides `isFlipped`, so it is y-up like the desktop — the flip was never needed. The old README entry asserted the wrong convention, so the docs "confirmed" the bug.
+**Fix:** `ScreenGeometry`'s doc comment now states the one convention: layout frames, `NSScreen.frame`, `NSWindow` content views and the editor preview are **all** bottom-left, y-up. `previewRect(for:scale:offset:)` and `canvasPoint(fromViewPoint:scale:offset:)` only scale and translate — the union origin already lives in the offset, so they no longer take a `unionFrame`. `OverlapMathTests` pins the orientation, the round trip, the agreement with `localFrame`, and a negative (multi-display) union origin.
+
+### 0c. The Game of Life grid was mirrored between the editor and the desktop
+**Problem:** `GridCanvasNSView` overrides `isFlipped` to `true`, so the editor draws grid row 0 at the top. The fragment shader *also* flipped y (`fragPos.y = viewHeight - fragPos.y`) on top of Metal's already top-left-origin `[[position]]`, so row 0 rendered at the **bottom** of the desktop canvas. Every pattern drawn in the editor came out upside down on the desktop.
+**Fix:** The shader indexes rows straight from `in.position.xy`; `viewHeight` was removed from the fragment params. `GameOfLifeOrientationTests` renders a single alive row through the real pipeline and reads the drawable back, so re-introducing the flip fails the suite instead of silently mirroring the grid.
+
+### 0d. Rule: any new view that draws the layout
+Keep every layout view **unflipped** (`isFlipped == false`) and let `ScreenGeometry` be the only place that maps stored frames to view coordinates. If a view genuinely must be flipped, flip inside its own drawing and keep the mapping flip-free — flipping in one place and not the other is exactly what produced 0b and 0c. Both regressions are covered by tests; run `swift test` after touching any coordinate code.
+
+### 0e. Snapping: keep the axes apart, and keep the drawn guide honest
+**Problem:** Three snap defects shared one root cause — the engine treated a frame as a bag of numbers instead of two independent axes. `candidateSnapTargets` merged x and y values into one flat list, so an origin could snap to the screen's mid-height while checking for an x match (and vice versa), pulling canvases to invisible positions. A second cause: `margin` was stored on `SnapEngine` but never read, while the editor's `buildSnapGuides` overlay *did* honour it — so a guide line appeared for a snap that never fired. Third, only the aspect-locked video path ever consulted screen edges; a Game of Life corner just grid-rounded and so could never be dragged flush to a screen edge.
+**Fix:** `snappedCoordinate(_:axis:excluding:)` takes a `SnapAxis`, and `candidateSnapTargets` returns separate `x` and `y` arrays; the margin offsets (`maxX + margin`, `minX - margin`, …) are offered as real targets; the drawn guide now reports the same offset number the snap uses; and `snapCornerResize` records whether an edge snap won and lets it override the cell-size rounding.
+**Lesson:** When a snap "does nothing" but a guide line is drawn, the guide and the snap are computing different target lists — make them share one function. Note this bug class is the same family as 0b/0c: it was a coordinate-axis mix-up, not a math error. Covered by 12 tests in `Tests/DesktopCanvasTests/SnapEngineTests.swift` ("Axis independence", "Margin adjacency", "Resize snapping").
 
 ### 1. Defer playback until layer is sized
 **Problem:** Starting `player.play()` in `attach()` when the AVPlayerLayer frame is `.zero` (before `CanvasRenderer.setFrameSize` fires) causes the decoder to skip video initialization. Only audio plays.

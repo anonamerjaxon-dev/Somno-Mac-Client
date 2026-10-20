@@ -94,6 +94,103 @@ public enum BrushTool {
         grid.reduce(into: 0) { total, value in if value != 0 { total += 1 } }
     }
 
+    // MARK: - Pointer-based helpers
+    //
+    // `GameOfLifeProvider` mutates cells through an `MTLBuffer`'s raw pointer, so
+    // the same primitives are exposed against `UnsafeMutablePointer<UInt8>`.
+    // Routing both callers through this file keeps the tested Bresenham and
+    // seeding code identical to the code the app actually runs.
+
+    public static func setCell(
+        _ cells: UnsafeMutablePointer<UInt8>,
+        width: Int,
+        height: Int,
+        row: Int,
+        col: Int,
+        alive: Bool
+    ) {
+        guard width > 0, height > 0,
+              row >= 0, row < height,
+              col >= 0, col < width
+        else { return }
+        cells[row * width + col] = alive ? 1 : 0
+    }
+
+    /// Draws a Bresenham line into `cells`, clipped to the `width` × `height` grid.
+    public static func drawLine(
+        _ cells: UnsafeMutablePointer<UInt8>,
+        width: Int,
+        height: Int,
+        fromRow: Int,
+        fromCol: Int,
+        toRow: Int,
+        toCol: Int,
+        alive: Bool
+    ) {
+        guard width > 0, height > 0 else { return }
+        let value: UInt8 = alive ? 1 : 0
+        for cell in lineCells(fromRow: fromRow, fromCol: fromCol, toRow: toRow, toCol: toCol) {
+            guard cell.row >= 0, cell.row < height,
+                  cell.col >= 0, cell.col < width else { continue }
+            cells[cell.row * width + cell.col] = value
+        }
+    }
+
+    /// Fills the rectangle into `cells`, clipped to the `width` × `height` grid.
+    public static func fillRect(
+        _ cells: UnsafeMutablePointer<UInt8>,
+        width: Int,
+        height: Int,
+        minRow: Int,
+        minCol: Int,
+        maxRow: Int,
+        maxCol: Int,
+        alive: Bool
+    ) {
+        guard width > 0, height > 0 else { return }
+        let r0 = max(0, min(minRow, maxRow))
+        let r1 = min(height - 1, max(minRow, maxRow))
+        let c0 = max(0, min(minCol, maxCol))
+        let c1 = min(width - 1, max(minCol, maxCol))
+        guard r0 <= r1, c0 <= c1 else { return }
+
+        let value: UInt8 = alive ? 1 : 0
+        for cell in rectCells(minRow: r0, minCol: c0, maxRow: r1, maxCol: c1) {
+            cells[cell.row * width + cell.col] = value
+        }
+    }
+
+    /// Whole-grid random seed at the given density (0…1), clamped.
+    ///
+    /// This is the single seeding algorithm in the codebase: `randomSeed` below
+    /// and `GameOfLifeProvider.randomSeed(density:)` both call it, so the density
+    /// that the tests pin is the density the desktop renders.
+    public static func seedGrid(
+        _ cells: UnsafeMutablePointer<UInt8>,
+        count: Int,
+        density: Double,
+        using generator: inout RandomNumberGenerator
+    ) {
+        guard count > 0 else { return }
+        let clamped = density.isFinite ? min(max(density, 0), 1) : 0.5
+
+        // Density 1.0 is a special case: `UInt8(clamped * 256)` would be 256,
+        // which does not fit in a UInt8 and previously wrapped to 0 (filling
+        // nothing). Filling explicitly keeps a "100%" seed actually full.
+        if clamped >= 1 {
+            for index in 0..<count {
+                cells[index] = 1
+            }
+            return
+        }
+
+        // Integer threshold over a 0…255 draw: P(alive) = threshold / 256.
+        let threshold = UInt8(clamped * 256)
+        for index in 0..<count {
+            cells[index] = UInt8.random(in: 0...255, using: &generator) < threshold ? 1 : 0
+        }
+    }
+
     // MARK: - Mutating helpers
 
     public static func setCell(
@@ -212,11 +309,11 @@ public enum BrushTool {
         density: Double,
         using generator: inout RandomNumberGenerator
     ) -> [UInt8] {
-        let count = max(0, width * height)
-        let clamped = density.isFinite ? min(max(density, 0), 1) : 0.5
+        let count = max(0, width) * max(0, height)
         var grid = [UInt8](repeating: 0, count: count)
-        for index in 0..<count {
-            grid[index] = Double.random(in: 0..<1, using: &generator) < clamped ? 1 : 0
+        grid.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            seedGrid(base, count: count, density: density, using: &generator)
         }
         return grid
     }

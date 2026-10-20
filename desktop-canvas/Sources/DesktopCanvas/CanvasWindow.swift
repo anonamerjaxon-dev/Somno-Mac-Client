@@ -55,6 +55,12 @@ final class CanvasWindow: NSWindow {
         providers[canvasID] as? T
     }
 
+    /// Every Game of Life provider currently hosted by this window, so setup
+    /// failures can be collected and reported instead of leaving a blank canvas.
+    func gameOfLifeProviders() -> [GameOfLifeProvider] {
+        providers.values.compactMap { $0 as? GameOfLifeProvider }
+    }
+
     func pauseAllProviders() {
         for provider in providers.values {
             provider.pause()

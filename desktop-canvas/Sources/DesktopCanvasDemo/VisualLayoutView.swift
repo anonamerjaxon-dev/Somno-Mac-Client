@@ -390,7 +390,6 @@ final class LayoutNSView: NSView {
     private func scaledRect(_ rect: CGRect, scale: CGFloat, offset: CGPoint) -> CGRect {
         ScreenGeometry.previewRect(
             for: rect,
-            unionFrame: cachedUnionFrame,
             scale: scale,
             offset: offset
         )
@@ -399,7 +398,6 @@ final class LayoutNSView: NSView {
     private func viewToScreen(_ viewPoint: CGPoint) -> CGPoint {
         ScreenGeometry.canvasPoint(
             fromViewPoint: viewPoint,
-            unionFrame: cachedUnionFrame,
             scale: cachedScale,
             offset: cachedOffset
         )
@@ -537,12 +535,12 @@ final class LayoutNSView: NSView {
             for other in others {
                 let f = other.frame
                 let margin = coordinator.state.margin
-                if abs(rect.minX - f.maxX - margin) < threshold { guides.append(("x", f.maxX)) }
-                if abs(rect.maxX - f.minX + margin) < threshold { guides.append(("x", f.minX)) }
+                if abs(rect.minX - f.maxX - margin) < threshold { guides.append(("x", f.maxX + margin)) }
+                if abs(rect.maxX - f.minX + margin) < threshold { guides.append(("x", f.minX - margin)) }
                 if abs(rect.minX - f.minX) < threshold { guides.append(("x", f.minX)) }
                 if abs(rect.maxX - f.maxX) < threshold { guides.append(("x", f.maxX)) }
-                if abs(rect.minY - f.maxY - margin) < threshold { guides.append(("y", f.maxY)) }
-                if abs(rect.maxY - f.minY + margin) < threshold { guides.append(("y", f.minY)) }
+                if abs(rect.minY - f.maxY - margin) < threshold { guides.append(("y", f.maxY + margin)) }
+                if abs(rect.maxY - f.minY + margin) < threshold { guides.append(("y", f.minY - margin)) }
                 if abs(rect.minY - f.minY) < threshold { guides.append(("y", f.minY)) }
                 if abs(rect.maxY - f.maxY) < threshold { guides.append(("y", f.maxY)) }
             }

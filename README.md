@@ -130,4 +130,8 @@ cd totem\ pop/test && ./build.sh
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+This repository bundles one third-party component, [Ghostty Blackhole](https://github.com/s13k/ghostty-blackhole)
+(MIT, © 2026 s13k), under `black hole/ghostty-blackhole-main/`. Its license is
+kept there and the details are in [THIRD-PARTY.md](THIRD-PARTY.md).
